@@ -193,21 +193,19 @@ Then open `http://localhost:3000`.
 - Keep your API key secure
 - Consider using environment-specific API keys for different environments
 
-## Access control (referrer gate)
+## Access control (URL params gate)
 
-The form only loads when the visitor arrives from an Airtable page. The app checks the HTTP Referer: if it is missing or not from an allowed origin, users see a message asking them to open the link from Airtable instead of the form. This is a **convenience restriction**, not security—referrer can be empty (e.g. bookmarks, direct URL) or spoofed. Use it to reduce accidental use, not to protect sensitive data.
+The form only loads when the URL includes `baseId` and `tableId` query params that match your Airtable base and destination table (the same values as `VITE_AIRTABLE_BASE_ID` and `VITE_AIRTABLE_TABLE_ID` in your env). No backend—check is done in the browser.
 
-**Allowed origins (default):** `https://airtable.com`, `https://app.airtable.com`
+**Link format for your Airtable button:**
 
-To override, set in `.env`:
-
-```env
-VITE_ALLOWED_REFERRER_ORIGINS=https://airtable.com,https://app.airtable.com
+```
+https://your-app-url.com?baseId=appXXXX&tableId=tblYYYY
 ```
 
-When deploying with Docker/Railway, add `VITE_ALLOWED_REFERRER_ORIGINS` to your build variables if you need to change the default.
+Replace `appXXXX` and `tblYYYY` with your actual base ID and destination table ID (the same ones in your `.env`). Put this full URL in the Airtable button or link; only visitors who open this URL will see the form.
 
-**Testing the referrer gate locally:** When running `npm run dev`, you can simulate “came from Airtable” by opening the app with a query param: `http://localhost:5173/?from_airtable=1`. The form will load. Without that param (e.g. `http://localhost:5173`), you’ll see the blocked message. This bypass works only in development (Vite dev server), not in production builds.
+**Testing locally:** Use the same URL with your real base/table IDs, e.g. `http://localhost:5173/?baseId=appXXX&tableId=tblYYY`. In development only, you can also use `?from_airtable=1` to bypass the check and see the form without the params.
 
 ## Troubleshooting
 
