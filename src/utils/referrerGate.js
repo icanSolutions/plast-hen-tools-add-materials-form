@@ -31,6 +31,8 @@ export function isAllowedReferrer() {
   }
 
   const referrer = document.referrer
+  console.log("Referrer:", document.referrer)
+console.log("Origin:", document.referrer ? new URL(document.referrer).origin : null)
   if (!referrer) return false
   try {
     const origin = new URL(referrer).origin
