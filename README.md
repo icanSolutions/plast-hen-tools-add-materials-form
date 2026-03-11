@@ -55,6 +55,9 @@ VITE_MATERIALS_TABLE_ID=tblXXXXXXXXXXXXXX
 # Field names in lookup tables (the field that contains values to display)
 VITE_PRODUCTION_PROJECTS_FIELD=Name
 VITE_MATERIALS_FIELD=Name
+
+# Optional: comma-separated origins allowed for referrer gate (default: Airtable)
+# VITE_ALLOWED_REFERRER_ORIGINS=https://airtable.com,https://app.airtable.com
 ```
 
 **Finding Table IDs:**
@@ -189,6 +192,22 @@ Then open `http://localhost:3000`.
 - Never commit your `.env` file to version control
 - Keep your API key secure
 - Consider using environment-specific API keys for different environments
+
+## Access control (referrer gate)
+
+The form only loads when the visitor arrives from an Airtable page. The app checks the HTTP Referer: if it is missing or not from an allowed origin, users see a message asking them to open the link from Airtable instead of the form. This is a **convenience restriction**, not security—referrer can be empty (e.g. bookmarks, direct URL) or spoofed. Use it to reduce accidental use, not to protect sensitive data.
+
+**Allowed origins (default):** `https://airtable.com`, `https://app.airtable.com`
+
+To override, set in `.env`:
+
+```env
+VITE_ALLOWED_REFERRER_ORIGINS=https://airtable.com,https://app.airtable.com
+```
+
+When deploying with Docker/Railway, add `VITE_ALLOWED_REFERRER_ORIGINS` to your build variables if you need to change the default.
+
+**Testing the referrer gate locally:** When running `npm run dev`, you can simulate “came from Airtable” by opening the app with a query param: `http://localhost:5173/?from_airtable=1`. The form will load. Without that param (e.g. `http://localhost:5173`), you’ll see the blocked message. This bypass works only in development (Vite dev server), not in production builds.
 
 ## Troubleshooting
 
