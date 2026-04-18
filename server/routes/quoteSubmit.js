@@ -179,13 +179,15 @@ router.post('/submit', async (req, res, next) => {
     const baseId = process.env.AIRTABLE_BASE_ID
     const interfacePageId =
       (process.env.AIRTABLE_QUOTE_INTERFACE_PAGE_ID || '').trim()
+    const interfaceHomePageId =
+      (process.env.AIRTABLE_QUOTE_INTERFACE_HOME_PAGE_ID || 'pagDmcxhbziOJXv4N').trim()
     const quotesTableId = process.env.AIRTABLE_QUOTES_TABLE_ID
 
     /** Interface record page: https://airtable.com/{app}/{pag}/{rec} — open Interface, not Data table. */
     let airtable_record_url = ''
     if (baseId && recordId) {
       if (interfacePageId) {
-        airtable_record_url = `https://airtable.com/${baseId}/${interfacePageId}/${recordId}?home=${interfacePageId}`
+        airtable_record_url = `https://airtable.com/${baseId}/${interfacePageId}/${recordId}?home=${interfaceHomePageId || interfacePageId}`
       } else if (quotesTableId) {
         airtable_record_url = `https://airtable.com/${baseId}/${quotesTableId}/${recordId}`
       }

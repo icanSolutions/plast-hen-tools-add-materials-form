@@ -298,7 +298,8 @@ const QuoteForm = () => {
                 <p className="quote-result-lead">
                   מספר הצעה:{' '}
                   <strong className="quote-result-ref">
-                    {submitResult.quote_reference || submitResult.quote_record_id || '—'}
+                    {String(submitResult.quote_reference || '')
+                      .trim() || '—'}
                   </strong>
                 </p>
                 {submitResult.quote_record_id && (
