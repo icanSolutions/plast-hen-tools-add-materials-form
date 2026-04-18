@@ -99,9 +99,11 @@ The app will be available at `http://localhost:5173`
 
 ## Two separate URLs (no form switcher)
 
-- **Materials form (חומרי גלם לתיק ייצור):** open the **root URL** (e.g. `https://your-app.com/?baseId=...&tableId=...`).
-- **Supplier order form (הזמנה חדשה מספק):** open **`/supplier-order`** (e.g. `https://your-app.com/supplier-order?baseId=...&tableId=...`).
-- **Quote form (הצעת מחיר):** open **`/quote`** (e.g. `https://your-app.com/quote?baseId=...`).
+- **Materials form (חומרי גלם לתיק ייצור):** open the **root URL** (e.g. `https://your-app.com/?baseId=appXXXX`).
+- **Supplier order form (הזמנה חדשה מספק):** open **`/supplier-order`** (e.g. `https://your-app.com/supplier-order?baseId=appXXXX`).
+- **Quote form (הצעת מחיר):** open **`/quote`** (e.g. `https://your-app.com/quote?baseId=appXXXX`).
+
+`baseId` must match `VITE_AIRTABLE_BASE_ID` (your Airtable app id). An optional `&tableId=...` in the URL is ignored by the gate.
 
 Use each URL in its own place in the Airtable interface (e.g. different buttons or links).
 
@@ -144,7 +146,7 @@ VITE_CUSTOMER_CONTACTS_LINK_FIELD=אנשי קשר
 
 The page looks like a single **order document**: title "הזמנת ספק", recipient (supplier), date, then an order table and notes.
 
-1. Open the **supplier order** URL (e.g. `.../supplier-order?baseId=...&tableId=...`).
+1. Open the **supplier order** URL (e.g. `.../supplier-order?baseId=appXXXX`).
 2. At the top: choose **לכבוד** (supplier), **תאריך**, and optionally **מסמכים מצורפים** (URL).
 3. In the **order table**: each row is one line. Fill **חומר גלם / תיאור**, **מידות**, **כמות**, **הערות**. (Line status is not shown on the order doc—it is stored in Airtable only, default "פעיל".)
 4. Use **"הוסף שורה"** to add more lines.
@@ -269,16 +271,16 @@ Then open `http://localhost:3000`.
 
 ## Access control (URL params gate)
 
-The form only loads when the URL includes `baseId` and `tableId` query params that match your Airtable base and destination table (the same values as `VITE_AIRTABLE_BASE_ID` and `VITE_AIRTABLE_TABLE_ID` in your env). No backend—check is done in the browser.
+The form only loads when the URL includes a `baseId` query param that matches `VITE_AIRTABLE_BASE_ID` (your Airtable app id). No backend—check is done in the browser. The destination table for writes is still configured via `VITE_AIRTABLE_TABLE_ID` in env (not required in the link).
 
 **Link format for your Airtable interface:**
 
-- Materials form: `https://your-app-url.com/?baseId=appXXXX&tableId=tblYYYY`
-- Supplier order form: `https://your-app-url.com/supplier-order?baseId=appXXXX&tableId=tblYYYY`
+- Materials form: `https://your-app-url.com/?baseId=appXXXX`
+- Supplier order form: `https://your-app-url.com/supplier-order?baseId=appXXXX`
 
-Use the **same** `baseId` and `tableId` as in your `.env` (destination base and table). Put each URL in the right place in Airtable (e.g. one button for materials, one for supplier orders).
+Put each URL in the right place in Airtable (e.g. one button for materials, one for supplier orders).
 
-**Testing locally:** e.g. `http://localhost:5173/?baseId=appXXX&tableId=tblYYY` or `http://localhost:5173/supplier-order?baseId=appXXX&tableId=tblYYY`. In development only, you can use `?from_airtable=1` to bypass the gate.
+**Testing locally:** e.g. `http://localhost:5173/?baseId=appXXX` or `http://localhost:5173/supplier-order?baseId=appXXX`. In development only, you can use `?from_airtable=1` to bypass the gate.
 
 ## Troubleshooting
 
