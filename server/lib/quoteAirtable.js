@@ -53,6 +53,18 @@ export function getQuoteReferenceFieldName() {
 }
 
 /**
+ * Normalize an Airtable cell to a display string (lookup/multiselect → first value).
+ */
+export function stringifyReferenceCell(value) {
+  if (value == null) return ''
+  if (Array.isArray(value)) {
+    const x = value[0]
+    return x != null ? String(x).trim() : ''
+  }
+  return String(value).trim()
+}
+
+/**
  * Plain-text block for docs / placeholders: each product with תיאור and מחיר (he-IL numbers).
  */
 export function formatProductsParagraphForDoc(products) {
@@ -239,4 +251,55 @@ export async function getQuoteRecordById(recordId) {
   const url = `${tableUrl(tableId)}/${recordId}`
   const res = await axios.get(url, { headers: headers() })
   return res.data
+}
+
+/**
+ * Predicts the next reference (e.g. QT-42) for display and n8n only — does not write to Airtable.
+ * Scans existing rows (paginated), finds max N in PREFIX-N, returns PREFIX-(N+1).
+ * Airtable should compute the real reference (formula/autonumber); this should match if rules align.
+ * Reads values from AIRTABLE_QUOTE_REFERENCE_FIELD on existing records (formula output is readable via API).
+ */
+export async function computeNextQuoteReference() {
+  const tableId = process.env.AIRTABLE_QUOTES_TABLE_ID
+  if (!baseId || !apiKey) throw new Error('AIRTABLE_BASE_ID and AIRTABLE_API_KEY are required')
+  if (!tableId) throw new Error('AIRTABLE_QUOTES_TABLE_ID is required')
+
+  const refField = getQuoteReferenceFieldName()
+  const prefix = (process.env.QUOTE_REFERENCE_PREFIX || 'QT').trim()
+  const padRaw = process.env.QUOTE_REFERENCE_NUMBER_PAD
+  const padN =
+    padRaw != null && String(padRaw).trim() !== ''
+      ? parseInt(String(padRaw), 10)
+      : null
+
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`^${escapedPrefix}-(\\d+)$`, 'i')
+
+  let maxNum = 0
+  let offset
+  const maxPages = Math.max(1, Number(process.env.QUOTE_REFERENCE_MAX_SCAN_PAGES || 30))
+
+  for (let page = 0; page < maxPages; page++) {
+    const params = { maxRecords: 100 }
+    if (offset) params.offset = offset
+
+    const res = await axios.get(tableUrl(tableId), { params, headers: headers() })
+    const records = res.data.records || []
+    for (const r of records) {
+      const v = stringifyReferenceCell(r.fields?.[refField])
+      const m = v.match(re)
+      if (m) {
+        const n = parseInt(m[1], 10)
+        if (!Number.isNaN(n)) maxNum = Math.max(maxNum, n)
+      }
+    }
+    offset = res.data.offset
+    if (!offset) break
+  }
+
+  const next = maxNum + 1
+  if (padN != null && Number.isFinite(padN) && padN > 0) {
+    return `${prefix}-${String(next).padStart(padN, '0')}`
+  }
+  return `${prefix}-${next}`
 }

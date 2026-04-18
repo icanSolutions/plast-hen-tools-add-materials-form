@@ -2,9 +2,8 @@ import express from 'express'
 import axios from 'axios'
 import {
   createQuoteRecord,
-  getQuoteRecordById,
   mapPayloadToQuoteFields,
-  getQuoteReferenceFieldName,
+  computeNextQuoteReference,
   toRecordIds,
   formatProductsParagraphForDoc,
 } from '../lib/quoteAirtable.js'
@@ -124,14 +123,12 @@ router.post('/submit', async (req, res, next) => {
       return res.status(400).json({ error: 'created_by (נוצר על ידי) is required (array of record ids)' })
     }
 
+    /** Shown on success + sent to n8n; not written to Airtable (reference is formula/autonumber there). */
+    const quote_reference = await computeNextQuoteReference()
+
     const fields = mapPayloadToQuoteFields(normalized)
     const created = await createQuoteRecord(fields)
     const recordId = created.id
-
-    const full = await getQuoteRecordById(recordId)
-    const refField = getQuoteReferenceFieldName()
-    const quote_reference =
-      full.fields?.[refField] != null ? String(full.fields[refField]) : ''
 
     const n8nUrl = process.env.N8N_QUOTE_WEBHOOK_URL
     const n8nSecret = process.env.N8N_QUOTE_WEBHOOK_SECRET
