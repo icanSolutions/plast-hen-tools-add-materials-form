@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { apiUrl } from '../utils/apiBase.js'
 
 // Airtable configuration
 const AIRTABLE_BASE_ID = import.meta.env.VITE_AIRTABLE_BASE_ID || 'your-base-id'
@@ -657,11 +658,12 @@ export const fetchQuoteContacts = async (customerRecordId) => {
  * Submit quote to backend (creates Airtable record, n8n webhook).
  */
 export const submitQuote = async (payload) => {
-  const base = import.meta.env.VITE_PDF_API_BASE_URL || ''
-  if (!base) {
-    throw new Error('הגדר VITE_PDF_API_BASE_URL (כתובת שרת ה-API)')
+  const url = apiUrl('/api/quote/submit')
+  if (url == null) {
+    throw new Error(
+      'הגדר VITE_PDF_API_BASE_URL ב-.env — לדוגמה http://localhost:3001 לפיתוח, או ערך ריק לאותו דומיין בפרודקשן'
+    )
   }
-  const url = `${String(base).replace(/\/$/, '')}/api/quote/submit`
   try {
     const response = await axios.post(url, payload, {
       headers: { 'Content-Type': 'application/json' },

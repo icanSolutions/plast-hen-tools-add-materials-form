@@ -4,6 +4,7 @@ import {
   fetchMaterials,
   createSupplierOrder,
 } from '../services/airtable'
+import { getApiBaseUrl, apiUrl } from '../utils/apiBase.js'
 import SearchableSelect from './SearchableSelect'
 import './SupplierOrderForm.css'
 
@@ -155,13 +156,16 @@ const SupplierOrderForm = () => {
       )
       console.log('The new order from supplier result:', result)
 
-      const apiBase = import.meta.env.VITE_PDF_API_BASE_URL
-      console.log('[SupplierOrderForm] apiBase (VITE_PDF_API_BASE_URL)=', apiBase || '(not set - PDF/Drive will be skipped)')
+      const apiBase = getApiBaseUrl()
+      console.log(
+        '[SupplierOrderForm] API base:',
+        apiBase === null ? '(VITE_PDF_API_BASE_URL not set)' : apiBase === '' ? '(same origin)' : apiBase
+      )
 
-      if (apiBase && action === 'save-pdf') {
+      if (apiBase !== null && action === 'save-pdf') {
         setSubmitStatus({ type: 'success', message: 'מוריד PDF...' })
         try {
-          const pdfUrl = `${apiBase}/api/supplier-order/pdf`
+          const pdfUrl = apiUrl('/api/supplier-order/pdf')
           console.log('[SupplierOrderForm] calling backend PDF:', pdfUrl)
           const res = await fetch(pdfUrl, {
             method: 'POST',
@@ -194,10 +198,10 @@ const SupplierOrderForm = () => {
             message: `הזמנה נוצרה (${result.lineCount} שורות). שגיאה בהורדת PDF: ${apiErr.message}`,
           })
         }
-      } else if (apiBase && action === 'send') {
+      } else if (apiBase !== null && action === 'send') {
         setSubmitStatus({ type: 'success', message: 'שולח לספק ומעלה ל-Drive...' })
         try {
-          const sendUrl = `${apiBase}/api/supplier-order/send`
+          const sendUrl = apiUrl('/api/supplier-order/send')
           console.log('[SupplierOrderForm] calling backend send:', sendUrl)
           const res = await fetch(sendUrl, {
             method: 'POST',
@@ -231,9 +235,10 @@ const SupplierOrderForm = () => {
       } else {
         setSubmitStatus({
           type: 'success',
-          message: apiBase
-            ? `נוצרה בהצלחה הזמנת ספק (${result.lineCount} שורות).`
-            : `הזמנה נוצרה (${result.lineCount} שורות). להפעלת PDF/Drive: הגדר VITE_PDF_API_BASE_URL ב-.env (למשל http://localhost:3001), הפעל את השרת (cd server && npm run dev) וטען מחדש את הדף.`,
+          message:
+            apiBase !== null
+              ? `נוצרה בהצלחה הזמנת ספק (${result.lineCount} שורות).`
+              : `הזמנה נוצרה (${result.lineCount} שורות). להפעלת PDF/Drive: הגדר VITE_PDF_API_BASE_URL ב-.env (למשל http://localhost:3001), הפעל את השרת (cd server && npm run dev) וטען מחדש את הדף.`,
         })
       }
 
