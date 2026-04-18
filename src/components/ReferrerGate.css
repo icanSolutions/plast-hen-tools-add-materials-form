@@ -1,0 +1,35 @@
+.referrer-gate {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.referrer-gate-loading {
+  color: #667eea;
+  font-weight: 600;
+}
+
+.referrer-gate-blocked {
+  background: #f8f9fa;
+}
+
+.referrer-gate-blocked-content {
+  max-width: 480px;
+  text-align: center;
+  direction: rtl;
+}
+
+.referrer-gate-blocked-content h1 {
+  color: #495057;
+  font-size: 1.5rem;
+  margin-bottom: 16px;
+}
+
+.referrer-gate-blocked-content p {
+  color: #6c757d;
+  font-size: 1rem;
+  line-height: 1.6;
+  margin: 0;
+}

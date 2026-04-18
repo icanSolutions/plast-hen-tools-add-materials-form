@@ -1,3 +1,11 @@
+:root {
+  --color-primary: #005195;
+  --color-primary-light: #a8c9ea;
+  --color-bg: #f5f8fb;
+  --color-text: #212529;
+  --color-text-muted: #6c757d;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -14,10 +22,11 @@ body {
     'Arial Hebrew', 'David', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-bg);
   min-height: 100vh;
   padding: 20px;
   direction: rtl;
+  color: var(--color-text);
 }
 
 #root {

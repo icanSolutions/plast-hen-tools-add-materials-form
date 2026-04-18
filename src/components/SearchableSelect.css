@@ -15,8 +15,8 @@
 }
 
 .searchable-select.is-open .searchable-select-input {
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(0, 81, 149, 0.12);
 }
 
 .searchable-select-input:focus {
@@ -37,7 +37,7 @@
   padding: 0;
   list-style: none;
   background: white;
-  border: 2px solid #667eea;
+  border: 2px solid var(--color-primary);
   border-radius: 8px;
   max-height: 220px;
   overflow-y: auto;
@@ -53,7 +53,7 @@
 
 .searchable-select-item:hover,
 .searchable-select-item.selected {
-  background: rgba(102, 126, 234, 0.12);
+  background: rgba(0, 81, 149, 0.08);
 }
 
 .searchable-select-item.no-results {

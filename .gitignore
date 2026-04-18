@@ -30,3 +30,5 @@ coverage/
 # Misc
 *.tgz
 .cache/
+
+server/firm-vortex-480909-n8-38d43a59b92b.json

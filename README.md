@@ -55,6 +55,21 @@ VITE_MATERIALS_TABLE_ID=tblXXXXXXXXXXXXXX
 # Field names in lookup tables (the field that contains values to display)
 VITE_PRODUCTION_PROJECTS_FIELD=Name
 VITE_MATERIALS_FIELD=Name
+# Optional: field to show in materials dropdown/list (default: שם מוצר)
+# VITE_MATERIALS_DISPLAY_FIELD=שם מוצר
+
+# Suppliers and supplier orders
+VITE_SUPPLIERS_TABLE_ID=tblXXXXXXXXXXXXXX
+VITE_SUPPLIER_ORDERS_TABLE_ID=tblXXXXXXXXXXXXXX
+VITE_SUPPLIER_ORDER_LINES_TABLE_ID=tblXXXXXXXXXXXXXX
+VITE_SUPPLIERS_FIELD=Name
+
+# Optional: PDF backend base URL (for "צור ושמור PDF" and "צור ושלח לספק")
+# When set, the app will call POST .../api/supplier-order/pdf and .../api/supplier-order/send
+# VITE_PDF_API_BASE_URL=https://your-backend.example.com
+
+# Optional: comma-separated origins allowed for referrer gate (default: Airtable)
+# VITE_ALLOWED_REFERRER_ORIGINS=https://airtable.com,https://app.airtable.com
 ```
 
 **Finding Table IDs:**
@@ -82,7 +97,38 @@ npm run dev
 
 The app will be available at `http://localhost:5173`
 
+## Two separate URLs (no form switcher)
+
+- **Materials form (חומרי גלם לתיק ייצור):** open the **root URL** (e.g. `https://your-app.com/?baseId=...&tableId=...`).
+- **Supplier order form (הזמנה חדשה מספק):** open **`/supplier-order`** (e.g. `https://your-app.com/supplier-order?baseId=...&tableId=...`).
+- **Quote form (הצעת מחיר):** open **`/quote`** (e.g. `https://your-app.com/quote?baseId=...`).
+
+Use each URL in its own place in the Airtable interface (e.g. different buttons or links).
+
+### Quote form — loading contacts (customer-first)
+
+Contacts for the **איש קשר** dropdown are loaded **only from the Customer record**: the app reads the linked Contact record ids from a field **on the Customers table**, then fetches each Contact row. It does **not** filter the Contacts table by a “contact → customer” link.
+
+**Required in `.env` (in addition to base/key and table ids):**
+
+```env
+VITE_CUSTOMERS_TABLE_ID=tblXXXXXXXXXXXXXX
+VITE_CONTACTS_TABLE_ID=tblXXXXXXXXXXXXXX
+
+# Field on Customers that links to Contacts (field name or fldXXXXXXXXXXXXXX)
+VITE_CUSTOMER_CONTACTS_LINK_FIELD=אנשי קשר
+
+# Optional: display fields on Contacts (defaults: שם, אימייל, טלפון). Use fld… if needed.
+# VITE_CONTACT_NAME_FIELD=שם
+# VITE_CONTACT_EMAIL_FIELD=אימייל
+# VITE_CONTACT_PHONE_FIELD=טלפון
+```
+
+`VITE_CONTACT_CUSTOMER_LINK_FIELD` and `VITE_CONTACT_CUSTOMER_LINK_MULTIPLE` are **not** used for loading quote contacts anymore (they applied to the old “filter Contacts by formula” approach).
+
 ## Usage
+
+### Multi-record form (חומרי גלם לתיק ייצור) — root URL `/`
 
 1. The form loads dropdown options from your Airtable tables automatically
 2. Fill in the form fields for the first record:
@@ -93,6 +139,21 @@ The app will be available at `http://localhost:5173`
 4. Fill in all the records you want to create
 5. Click "צור X רשומה/ות" to submit all records to Airtable
 6. Records will be created in batches (up to 10 at a time)
+
+### Supplier order form (הזמנה חדשה מספק) — URL `/supplier-order`
+
+The page looks like a single **order document**: title "הזמנת ספק", recipient (supplier), date, then an order table and notes.
+
+1. Open the **supplier order** URL (e.g. `.../supplier-order?baseId=...&tableId=...`).
+2. At the top: choose **לכבוד** (supplier), **תאריך**, and optionally **מסמכים מצורפים** (URL).
+3. In the **order table**: each row is one line. Fill **חומר גלם / תיאור**, **מידות**, **כמות**, **הערות**. (Line status is not shown on the order doc—it is stored in Airtable only, default "פעיל".)
+4. Use **"הוסף שורה"** to add more lines.
+5. Fill **הערות** and check the **חומרי גלם (סיכום)** summary.
+6. Choose an action:
+   - **"צור ושמור PDF"** — creates the order in Airtable and, when the PDF backend is configured, generates a PDF and triggers a **browser download**.
+   - **"צור ושלח לספק"** — creates the order and, when the backend is configured, uploads the PDF and sends it to the supplier by email.
+
+Without a PDF backend, both buttons only create the order in Airtable (one record in **הזמנות מספקים** and one per line in **שורות הזמנת ספק**).
 
 ## Customization
 
@@ -137,6 +198,22 @@ npm run build
 ```
 
 The built files will be in the `dist` directory.
+
+## Backend (supplier order PDF and email)
+
+The **server** folder is a separate Node.js API used for:
+
+- **POST /api/supplier-order/pdf** — Generate a supplier order PDF (PDFKit) and return it for download.
+- **POST /api/supplier-order/send** — Generate the PDF, upload it to Google Drive, update the Airtable order record with the PDF link (טופס הזמנה), and email the supplier.
+
+To use it:
+
+1. **Configure the frontend**: In the root `.env`, set `VITE_PDF_API_BASE_URL` to your backend URL (e.g. `http://localhost:3001` for local dev).
+2. **Run the backend**: See `server/README.md` for setup (Airtable, Google Drive service account, SMTP). Then:
+   ```bash
+   cd server && npm install && npm run dev
+   ```
+   By default the server runs on port **3001**.
 
 ## Deploy to Railway (Docker)
 
@@ -189,6 +266,19 @@ Then open `http://localhost:3000`.
 - Never commit your `.env` file to version control
 - Keep your API key secure
 - Consider using environment-specific API keys for different environments
+
+## Access control (URL params gate)
+
+The form only loads when the URL includes `baseId` and `tableId` query params that match your Airtable base and destination table (the same values as `VITE_AIRTABLE_BASE_ID` and `VITE_AIRTABLE_TABLE_ID` in your env). No backend—check is done in the browser.
+
+**Link format for your Airtable interface:**
+
+- Materials form: `https://your-app-url.com/?baseId=appXXXX&tableId=tblYYYY`
+- Supplier order form: `https://your-app-url.com/supplier-order?baseId=appXXXX&tableId=tblYYYY`
+
+Use the **same** `baseId` and `tableId` as in your `.env` (destination base and table). Put each URL in the right place in Airtable (e.g. one button for materials, one for supplier orders).
+
+**Testing locally:** e.g. `http://localhost:5173/?baseId=appXXX&tableId=tblYYY` or `http://localhost:5173/supplier-order?baseId=appXXX&tableId=tblYYY`. In development only, you can use `?from_airtable=1` to bypass the gate.
 
 ## Troubleshooting
 
