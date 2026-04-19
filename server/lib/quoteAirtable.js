@@ -254,10 +254,41 @@ export async function getQuoteRecordById(recordId) {
 }
 
 /**
+ * Extracts the numeric part of a quote reference cell (formula may return number, "21", "QT-21", "QT - 21", etc.).
+ */
+function parseQuoteSeriesNumber(cell, prefix) {
+  if (cell == null) return null
+  if (typeof cell === 'number' && Number.isFinite(cell)) {
+    return Math.trunc(cell)
+  }
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const v = stringifyReferenceCell(cell).trim()
+  if (!v) return null
+
+  const patterns = [
+    new RegExp(`^${escapedPrefix}\\s*-\\s*(\\d+)$`, 'i'),
+    new RegExp(`^${escapedPrefix}(\\d+)$`, 'i'),
+    /^(\d+)$/,
+    /(\d+)\s*$/,
+  ]
+  for (const re of patterns) {
+    const m = v.match(re)
+    if (m) {
+      const n = parseInt(m[1], 10)
+      if (!Number.isNaN(n)) return n
+    }
+  }
+  return null
+}
+
+/**
  * Predicts the next reference (e.g. QT-42) for display and n8n only — does not write to Airtable.
  * Scans existing rows (paginated), finds max N in PREFIX-N, returns PREFIX-(N+1).
  * Airtable should compute the real reference (formula/autonumber); this should match if rules align.
  * Reads values from AIRTABLE_QUOTE_REFERENCE_FIELD on existing records (formula output is readable via API).
+ *
+ * If you always get QT-1, check: exact field name in AIRTABLE_QUOTE_REFERENCE_FIELD (or fld…),
+ * QUOTE_REFERENCE_PREFIX matches the text before the number, and the cell is not empty on old rows.
  */
 export async function computeNextQuoteReference() {
   const tableId = process.env.AIRTABLE_QUOTES_TABLE_ID
@@ -272,9 +303,6 @@ export async function computeNextQuoteReference() {
       ? parseInt(String(padRaw), 10)
       : null
 
-  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const re = new RegExp(`^${escapedPrefix}-(\\d+)$`, 'i')
-
   let maxNum = 0
   let offset
   const maxPages = Math.max(1, Number(process.env.QUOTE_REFERENCE_MAX_SCAN_PAGES || 30))
@@ -286,12 +314,9 @@ export async function computeNextQuoteReference() {
     const res = await axios.get(tableUrl(tableId), { params, headers: headers() })
     const records = res.data.records || []
     for (const r of records) {
-      const v = stringifyReferenceCell(r.fields?.[refField])
-      const m = v.match(re)
-      if (m) {
-        const n = parseInt(m[1], 10)
-        if (!Number.isNaN(n)) maxNum = Math.max(maxNum, n)
-      }
+      const cell = r.fields?.[refField]
+      const n = parseQuoteSeriesNumber(cell, prefix)
+      if (n != null && !Number.isNaN(n)) maxNum = Math.max(maxNum, n)
     }
     offset = res.data.offset
     if (!offset) break
