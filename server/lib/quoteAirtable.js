@@ -135,21 +135,18 @@ export function mapPayloadToQuoteFields(payload) {
     fields[f.internal_notes] = String(payload.internal_notes)
   }
 
-  const products = payload.products_paragraph
-
-  if (process.env.QUOTE_WRITE_PRODUCTS_JSON_TO_AIRTABLE === 'true') {
-    fields[f.products_json] = JSON.stringify(products)
-  }
-
   const descOnly =
     payload.description != null ? String(payload.description).trim() : ''
-  const para =
+  if (descOnly !== '') {
+    fields[f.description] = descOnly
+  }
+
+  const productsParagraph =
     payload.products_paragraph != null
       ? String(payload.products_paragraph).trim()
       : ''
-  const descriptionCombined = [descOnly, para].filter(Boolean).join('\n\n')
-  if (descriptionCombined !== '') {
-    fields[f.description] = descriptionCombined
+  if (productsParagraph !== '') {
+    fields[f.products_json] = productsParagraph
   }
 
   /** Single price column = total incl. VAT (no separate מעמ / סהכ columns in Airtable). */
