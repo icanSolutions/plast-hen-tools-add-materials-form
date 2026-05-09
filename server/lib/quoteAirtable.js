@@ -33,7 +33,6 @@ function quoteFieldMap() {
     tax_price: process.env.QUOTE_FIELD_TAX_PRICE || 'מעמ',
     total_with_tax: process.env.QUOTE_FIELD_TOTAL_WITH_TAX || 'סהכ כולל מעמ',
     payment_conditions: process.env.QUOTE_FIELD_PAYMENT_CONDITIONS || 'תנאי תשלום',
-    payment_deadline: process.env.QUOTE_FIELD_PAYMENT_DEADLINE || 'מועד תשלום',
     sketch_deliver_deadline:
       process.env.QUOTE_FIELD_SKETCH_DEADLINE || 'מועד מסירת סקיצה',
     project_deadline: process.env.QUOTE_FIELD_PROJECT_DEADLINE || 'מועד פרויקט',
@@ -50,6 +49,64 @@ function quoteFieldMap() {
 
 export function getQuoteReferenceFieldName() {
   return process.env.AIRTABLE_QUOTE_REFERENCE_FIELD || 'reference'
+}
+
+/** Airtable column used to list “latest quote first” when predicting the next QT-* (default: created-at field from quoteFieldMap). */
+function getQuoteSortFieldForLatestQuote() {
+  const explicit = process.env.QUOTE_REFERENCE_SORT_FIELD?.trim()
+  if (explicit) return explicit
+  return quoteFieldMap().created_at
+}
+
+function referenceFormatOptions() {
+  const prefix = (process.env.QUOTE_REFERENCE_PREFIX || 'QT').trim()
+  const padRaw = process.env.QUOTE_REFERENCE_NUMBER_PAD
+  const padN =
+    padRaw != null && String(padRaw).trim() !== ''
+      ? parseInt(String(padRaw), 10)
+      : null
+  return { prefix, padN }
+}
+
+function formatReferenceFromSeriesNumber(n, prefix, padN) {
+  if (!Number.isFinite(n)) return ''
+  const k = Math.trunc(n)
+  if (padN != null && Number.isFinite(padN) && padN > 0) {
+    return `${prefix}-${String(k).padStart(padN, '0')}`
+  }
+  return `${prefix}-${k}`
+}
+
+function displayQuoteRefFromCell(cell, prefix, padN) {
+  if (cell == null) return ''
+  const n = parseQuoteSeriesNumber(cell, prefix)
+  if (n != null) return formatReferenceFromSeriesNumber(n, prefix, padN)
+  return stringifyReferenceCell(cell)
+}
+
+/**
+ * After Airtable create: prefer the formula/reference on the new row (truth), else GET once, else sorted prediction.
+ * Reference is never written by the API — only read for display and n8n.
+ */
+export async function resolveQuoteReferenceAfterCreate(created, recordId) {
+  const refField = getQuoteReferenceFieldName()
+  const { prefix, padN } = referenceFormatOptions()
+
+  const fromFields = (fields) =>
+    displayQuoteRefFromCell(fields?.[refField], prefix, padN).trim()
+
+  let ref = fromFields(created?.fields)
+  if (ref) return ref
+
+  try {
+    const rec = await getQuoteRecordById(recordId)
+    ref = fromFields(rec.fields)
+    if (ref) return ref
+  } catch (e) {
+    console.warn('[quote] re-fetch record for reference:', e.message)
+  }
+
+  return computeNextQuoteReference()
 }
 
 /**
@@ -187,11 +244,12 @@ export function mapPayloadToQuoteFields(payload) {
   if (payload.payment_conditions != null) {
     fields[f.payment_conditions] = String(payload.payment_conditions)
   }
-  if (payload.payment_deadline) fields[f.payment_deadline] = payload.payment_deadline
   if (payload.sketch_deliver_deadline) {
-    fields[f.sketch_deliver_deadline] = payload.sketch_deliver_deadline
+    fields[f.sketch_deliver_deadline] = String(payload.sketch_deliver_deadline).trim()
   }
-  if (payload.project_deadline) fields[f.project_deadline] = payload.project_deadline
+  if (payload.project_deadline) {
+    fields[f.project_deadline] = String(payload.project_deadline).trim()
+  }
   if (payload.delivery_to_client_label != null && payload.delivery_to_client_label !== '') {
     fields[f.delivery_to_client] = String(payload.delivery_to_client_label)
   }
@@ -279,27 +337,9 @@ function parseQuoteSeriesNumber(cell, prefix) {
 }
 
 /**
- * Predicts the next reference (e.g. QT-42) for display and n8n only — does not write to Airtable.
- * Scans existing rows (paginated), finds max N in PREFIX-N, returns PREFIX-(N+1).
- * Airtable should compute the real reference (formula/autonumber); this should match if rules align.
- * Reads values from AIRTABLE_QUOTE_REFERENCE_FIELD on existing records (formula output is readable via API).
- *
- * If you always get QT-1, check: exact field name in AIRTABLE_QUOTE_REFERENCE_FIELD (or fld…),
- * QUOTE_REFERENCE_PREFIX matches the text before the number, and the cell is not empty on old rows.
+ * Fallback: paginated scan (unordered) for max N in PREFIX-N.
  */
-export async function computeNextQuoteReference() {
-  const tableId = process.env.AIRTABLE_QUOTES_TABLE_ID
-  if (!baseId || !apiKey) throw new Error('AIRTABLE_BASE_ID and AIRTABLE_API_KEY are required')
-  if (!tableId) throw new Error('AIRTABLE_QUOTES_TABLE_ID is required')
-
-  const refField = getQuoteReferenceFieldName()
-  const prefix = (process.env.QUOTE_REFERENCE_PREFIX || 'QT').trim()
-  const padRaw = process.env.QUOTE_REFERENCE_NUMBER_PAD
-  const padN =
-    padRaw != null && String(padRaw).trim() !== ''
-      ? parseInt(String(padRaw), 10)
-      : null
-
+async function scanPagesForMaxQuoteSeriesNumber(tableId, refField, prefix) {
   let maxNum = 0
   let offset
   const maxPages = Math.max(1, Number(process.env.QUOTE_REFERENCE_MAX_SCAN_PAGES || 30))
@@ -318,10 +358,48 @@ export async function computeNextQuoteReference() {
     offset = res.data.offset
     if (!offset) break
   }
+  return maxNum
+}
 
-  const next = maxNum + 1
-  if (padN != null && Number.isFinite(padN) && padN > 0) {
-    return `${prefix}-${String(next).padStart(padN, '0')}`
+/**
+ * Predicts the next reference (e.g. QT-42) for display and n8n only — does not write to Airtable.
+ * Primary: list quotes sorted by creation date (newest first), take the first row with a parseable ref, return PREFIX-(N+1).
+ * Fallback: full paginated max scan (legacy) if sort fails or no parseable ref in the first page.
+ *
+ * Configure `QUOTE_REFERENCE_SORT_FIELD` (e.g. `created_at`) or `QUOTE_FIELD_CREATED_AT` so it matches your base column.
+ */
+export async function computeNextQuoteReference() {
+  const tableId = process.env.AIRTABLE_QUOTES_TABLE_ID
+  if (!baseId || !apiKey) throw new Error('AIRTABLE_BASE_ID and AIRTABLE_API_KEY are required')
+  if (!tableId) throw new Error('AIRTABLE_QUOTES_TABLE_ID is required')
+
+  const refField = getQuoteReferenceFieldName()
+  const { prefix, padN } = referenceFormatOptions()
+  const sortField = getQuoteSortFieldForLatestQuote()
+
+  try {
+    const res = await axios.get(tableUrl(tableId), {
+      params: {
+        maxRecords: 100,
+        'sort[0][field]': sortField,
+        'sort[0][direction]': 'desc',
+      },
+      headers: headers(),
+    })
+    const records = res.data.records || []
+    for (const r of records) {
+      const n = parseQuoteSeriesNumber(r.fields?.[refField], prefix)
+      if (n != null && !Number.isNaN(n)) {
+        return formatReferenceFromSeriesNumber(n + 1, prefix, padN)
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[quote] sorted reference lookup failed (check QUOTE_REFERENCE_SORT_FIELD / QUOTE_FIELD_CREATED_AT):',
+      err.response?.data?.error?.message || err.message
+    )
   }
-  return `${prefix}-${next}`
+
+  const maxNum = await scanPagesForMaxQuoteSeriesNumber(tableId, refField, prefix)
+  return formatReferenceFromSeriesNumber(maxNum + 1, prefix, padN)
 }

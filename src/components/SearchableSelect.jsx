@@ -13,6 +13,10 @@ const SearchableSelect = ({
   disabled = false,
   id,
   'aria-label': ariaLabel,
+  allowCreateNew = false,
+  onCreateNew = null,
+  createNewLabel = null,
+  noResultsText = 'לא נמצאו תוצאות',
 }) => {
   const [query, setQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
@@ -26,6 +30,16 @@ const SearchableSelect = ({
         opt.name.toLowerCase().includes(query.toLowerCase())
       )
     : options
+
+  const q = query.trim()
+  const exactNameMatch =
+    q &&
+    options.some((o) => o.name.toLowerCase() === q.toLowerCase())
+  const showCreateNew =
+    allowCreateNew &&
+    typeof onCreateNew === 'function' &&
+    q &&
+    !exactNameMatch
 
   const close = () => {
     setIsOpen(false)
@@ -89,20 +103,34 @@ const SearchableSelect = ({
           className="searchable-select-list"
           role="listbox"
         >
-          {filteredOptions.length === 0 ? (
-            <li className="searchable-select-item no-results">No matches</li>
+          {filteredOptions.length === 0 && !showCreateNew ? (
+            <li className="searchable-select-item no-results">{noResultsText}</li>
           ) : (
-            filteredOptions.map((option) => (
-              <li
-                key={option.id}
-                role="option"
-                aria-selected={option.id === value}
-                className={`searchable-select-item ${option.id === value ? 'selected' : ''}`}
-                onClick={() => handleSelect(option)}
-              >
-                {option.name}
-              </li>
-            ))
+            <>
+              {filteredOptions.map((option) => (
+                <li
+                  key={option.id}
+                  role="option"
+                  aria-selected={option.id === value}
+                  className={`searchable-select-item ${option.id === value ? 'selected' : ''}`}
+                  onClick={() => handleSelect(option)}
+                >
+                  {option.name}
+                </li>
+              ))}
+              {showCreateNew ? (
+                <li
+                  role="option"
+                  className="searchable-select-item searchable-select-create"
+                  onClick={() => {
+                    onCreateNew(q)
+                    close()
+                  }}
+                >
+                  {createNewLabel || `צור איש קשר חדש: «${q}»`}
+                </li>
+              ) : null}
+            </>
           )}
         </ul>
       )}

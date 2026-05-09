@@ -65,6 +65,16 @@
   background: transparent;
 }
 
+.searchable-select-item.searchable-select-create {
+  border-top: 1px solid #dee2e6;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.searchable-select-item.searchable-select-create:hover {
+  background: rgba(0, 81, 149, 0.12);
+}
+
 .field-group .searchable-select-input {
   direction: rtl;
   text-align: right;

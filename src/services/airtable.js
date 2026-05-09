@@ -655,6 +655,20 @@ export const fetchQuoteContacts = async (customerRecordId) => {
 }
 
 /**
+ * Next quote reference for UI preview (GET /api/quote/next-reference). Same rules as server prediction.
+ */
+export const fetchQuoteNextReferencePreview = async () => {
+  const url = apiUrl('/api/quote/next-reference')
+  if (url == null) return ''
+  try {
+    const response = await axios.get(url)
+    return String(response.data?.quote_reference || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Submit quote to backend (creates Airtable record, n8n webhook).
  */
 export const submitQuote = async (payload) => {

@@ -4,11 +4,23 @@ import {
   createQuoteRecord,
   mapPayloadToQuoteFields,
   computeNextQuoteReference,
+  resolveQuoteReferenceAfterCreate,
   toRecordIds,
   formatProductsParagraphForDoc,
 } from '../lib/quoteAirtable.js'
+import { createQuoteContactAndLink } from '../lib/quoteContacts.js'
 
 const router = express.Router()
+
+/** Preview next QT-* for the form (same logic as submit fallback); reference is not written to Airtable. */
+router.get('/next-reference', async (req, res, next) => {
+  try {
+    const quote_reference = await computeNextQuoteReference()
+    res.json({ quote_reference })
+  } catch (err) {
+    next(err)
+  }
+})
 
 /**
  * First Airtable record id from a linked-record field (array of rec… ids).
@@ -78,10 +90,21 @@ function normalizePayload(body) {
 
   const products_paragraph = formatProductsParagraphForDoc(products)
 
+  const nc = body.new_contact
+  const new_contact =
+    nc && typeof nc === 'object' && String(nc.name || '').trim() !== ''
+      ? {
+          name: String(nc.name || '').trim(),
+          email: nc.email != null ? String(nc.email).trim() : '',
+          phone: nc.phone != null ? String(nc.phone).trim() : '',
+        }
+      : null
+
   return {
     description: body.description ?? '',
     customer: customerIds,
     contact: contactIds,
+    new_contact,
     created_by: createdByIds,
     customer_name: body.customer_name != null ? String(body.customer_name) : '',
     contact_name: body.contact_name != null ? String(body.contact_name) : '',
@@ -95,7 +118,6 @@ function normalizePayload(body) {
     tax_price,
     total_with_tax,
     payment_conditions: body.payment_conditions ?? '',
-    payment_deadline: body.payment_deadline || '',
     sketch_deliver_deadline: body.sketch_deliver_deadline || '',
     project_deadline: body.project_deadline || '',
     delivery_to_client_by,
@@ -111,33 +133,61 @@ function normalizePayload(body) {
 
 router.post('/submit', async (req, res, next) => {
   try {
-    const normalized = normalizePayload(req.body || {})
+    let normalized = normalizePayload(req.body || {})
 
     if (!Array.isArray(normalized.customer) || normalized.customer.length === 0) {
       return res.status(400).json({ error: 'customer (לקוח) is required (array of record ids)' })
     }
-    if (!Array.isArray(normalized.contact) || normalized.contact.length === 0) {
-      return res.status(400).json({ error: 'contact (איש קשר) is required (array of record ids)' })
+
+    const hasContact = Array.isArray(normalized.contact) && normalized.contact.length > 0
+    const hasNewContact = Boolean(normalized.new_contact?.name)
+    if (hasContact && hasNewContact) {
+      return res.status(400).json({
+        error: 'send either contact (existing record ids) or new_contact, not both',
+      })
     }
+    if (!hasContact && !hasNewContact) {
+      return res.status(400).json({
+        error: 'contact (איש קשר) is required, or new_contact with a name to create one',
+      })
+    }
+
+    if (hasNewContact) {
+      const customerId = normalized.customer[0]
+      const newId = await createQuoteContactAndLink({
+        customerRecordId: customerId,
+        name: normalized.new_contact.name,
+        email: normalized.new_contact.email,
+        phone: normalized.new_contact.phone,
+      })
+      normalized = {
+        ...normalized,
+        contact: [newId],
+        contact_name: normalized.new_contact.name,
+        new_contact: null,
+      }
+    }
+
     if (!Array.isArray(normalized.created_by) || normalized.created_by.length === 0) {
       return res.status(400).json({ error: 'created_by (נוצר על ידי) is required (array of record ids)' })
     }
-
-    /** Shown on success + sent to n8n; not written to Airtable (reference is formula/autonumber there). */
-    const quote_reference = await computeNextQuoteReference()
 
     const fields = mapPayloadToQuoteFields(normalized)
     const created = await createQuoteRecord(fields)
     const recordId = created.id
 
+    /** Prefer formula/reference on the new row; else prediction (sorted by created_at, then scan). Not written to Airtable. */
+    const quote_reference = await resolveQuoteReferenceAfterCreate(created, recordId)
+
     const n8nUrl = process.env.N8N_QUOTE_WEBHOOK_URL
     const n8nSecret = process.env.N8N_QUOTE_WEBHOOK_SECRET
 
     // n8n / Google Docs: price fields must be strings for replaceText (not numbers).
+    const { new_contact: _omitNew, ...normalizedForOutbound } = normalized
     const outbound = {
       quote_record_id: recordId,
       quote_reference,
-      ...normalized,
+      ...normalizedForOutbound,
       products_json: JSON.stringify(normalized.products),
       customer: displayNameOrRecordId(normalized.customer_name, normalized.customer),
       customer_record_id: firstLinkedRecordId(normalized.customer),

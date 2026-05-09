@@ -189,6 +189,18 @@
   padding-bottom: 12px;
 }
 
+.quote-doc-preview-ref {
+  margin: -12px 0 20px;
+  font-size: 0.95rem;
+  color: #495057;
+  text-align: center;
+}
+
+.quote-doc-preview-ref strong {
+  color: var(--color-primary);
+  font-size: 1.05rem;
+}
+
 .quote-form-alert {
   padding: 12px 16px;
   border-radius: 6px;
@@ -220,6 +232,53 @@
   flex-wrap: wrap;
 }
 
+.quote-deadline-offset {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.quote-deadline-num {
+  width: 88px;
+  padding: 10px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.quote-deadline-num:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.quote-deadline-unit {
+  padding: 9px 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-family: inherit;
+  min-width: 118px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.quote-deadline-unit:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.quote-deadline-offset-row .quote-deadline-hint {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+  color: #6c757d;
+  line-height: 1.4;
+  text-align: right;
+}
+
 .quote-doc-label {
   font-weight: 600;
   color: #495057;
@@ -235,6 +294,50 @@
 .quote-doc-field-inline {
   flex: 1;
   min-width: 200px;
+}
+
+.quote-doc-field-stack {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quote-field-note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #6c757d;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.quote-new-contact-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.quote-new-contact-name {
+  flex: 1;
+  min-width: 160px;
+}
+
+.quote-new-contact-back {
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  background: #f8f9fa;
+  cursor: pointer;
+  color: #495057;
+}
+
+.quote-new-contact-back:hover {
+  background: #e9ecef;
 }
 
 .quote-doc-input-inline {

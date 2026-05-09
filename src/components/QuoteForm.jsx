@@ -3,6 +3,7 @@ import {
   fetchQuoteCustomers,
   fetchQuoteContacts,
   fetchQuoteEmployees,
+  fetchQuoteNextReferencePreview,
   submitQuote,
 } from '../services/airtable'
 import SearchableSelect from './SearchableSelect'
@@ -14,6 +15,15 @@ function pad2(n) {
   return String(n).padStart(2, '0')
 }
 
+/** Builds Airtable text like "10 ימים" / "3 חודשים" (empty if no positive integer). */
+function formatOffsetDeadlineString(amountStr, unit) {
+  const raw = String(amountStr ?? '').trim()
+  if (raw === '') return ''
+  const n = parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  return unit === 'months' ? `${n} חודשים` : `${n} ימים`
+}
+
 const QuoteForm = () => {
   const [customers, setCustomers] = useState([])
   const [employees, setEmployees] = useState([])
@@ -21,15 +31,18 @@ const QuoteForm = () => {
   const [contacts, setContacts] = useState([])
   const [customerId, setCustomerId] = useState('')
   const [contactId, setContactId] = useState('')
+  const [isNewContact, setIsNewContact] = useState(false)
+  const [newContactName, setNewContactName] = useState('')
   const [description, setDescription] = useState('')
   const [transportingAdditionals, setTransportingAdditionals] = useState('')
   const [notes, setNotes] = useState('')
   const [internalNotes, setInternalNotes] = useState('')
   const [products, setProducts] = useState([emptyProduct()])
   const [paymentConditions, setPaymentConditions] = useState('')
-  const [paymentDeadline, setPaymentDeadline] = useState('')
-  const [sketchDeliverDeadline, setSketchDeliverDeadline] = useState('')
-  const [projectDeadline, setProjectDeadline] = useState('')
+  const [sketchDeadlineAmount, setSketchDeadlineAmount] = useState('')
+  const [sketchDeadlineUnit, setSketchDeadlineUnit] = useState('days')
+  const [projectDeadlineAmount, setProjectDeadlineAmount] = useState('')
+  const [projectDeadlineUnit, setProjectDeadlineUnit] = useState('days')
   const [deliveryToClientBy, setDeliveryToClientBy] = useState('')
   const [sendToClient, setSendToClient] = useState(false)
   const [sendToClientEmailAdditions, setSendToClientEmailAdditions] = useState('')
@@ -43,6 +56,8 @@ const QuoteForm = () => {
   const [formAlert, setFormAlert] = useState(null)
   /** After API response: full-page success or error. */
   const [submitResult, setSubmitResult] = useState(null)
+  /** Shown on the form only — server decides final ref after create (formula / sorted prediction). */
+  const [previewQuoteReference, setPreviewQuoteReference] = useState('')
   const resultTitleRef = useRef(null)
 
   useLayoutEffect(() => {
@@ -91,9 +106,23 @@ const QuoteForm = () => {
   }, [])
 
   useEffect(() => {
+    if (loadingOptions || submitResult) return
+    let cancelled = false
+    ;(async () => {
+      const ref = await fetchQuoteNextReferencePreview()
+      if (!cancelled) setPreviewQuoteReference(ref)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [loadingOptions, submitResult])
+
+  useEffect(() => {
     if (!customerId) {
       setContacts([])
       setContactId('')
+      setIsNewContact(false)
+      setNewContactName('')
       setEmail('')
       setPhone('')
       return
@@ -106,6 +135,8 @@ const QuoteForm = () => {
         if (!cancelled) {
           setContacts(list)
           setContactId('')
+          setIsNewContact(false)
+          setNewContactName('')
           setEmail('')
           setPhone('')
         }
@@ -125,6 +156,7 @@ const QuoteForm = () => {
   const selectedEmployee = employees.find((e) => e.id === createdById)
 
   useEffect(() => {
+    if (isNewContact) return
     if (selectedContact) {
       setEmail(selectedContact.email || '')
       setPhone(selectedContact.phone || '')
@@ -132,7 +164,7 @@ const QuoteForm = () => {
       setEmail('')
       setPhone('')
     }
-  }, [selectedContact])
+  }, [selectedContact, isNewContact])
 
   const totals = useMemo(() => {
     let sum = 0
@@ -162,6 +194,8 @@ const QuoteForm = () => {
     setCreatedById('')
     setCustomerId('')
     setContactId('')
+    setIsNewContact(false)
+    setNewContactName('')
     setContacts([])
     setDescription('')
     setTransportingAdditionals('')
@@ -169,9 +203,10 @@ const QuoteForm = () => {
     setInternalNotes('')
     setProducts([emptyProduct()])
     setPaymentConditions('')
-    setPaymentDeadline('')
-    setSketchDeliverDeadline('')
-    setProjectDeadline('')
+    setSketchDeadlineAmount('')
+    setSketchDeadlineUnit('days')
+    setProjectDeadlineAmount('')
+    setProjectDeadlineUnit('days')
     setDeliveryToClientBy('')
     setSendToClient(false)
     setSendToClientEmailAdditions('')
@@ -179,6 +214,7 @@ const QuoteForm = () => {
     setPhone('')
     setFormAlert(null)
     setSubmitResult(null)
+    setPreviewQuoteReference('')
   }
 
   const handleSubmit = async (e) => {
@@ -192,8 +228,12 @@ const QuoteForm = () => {
       setFormAlert({ type: 'error', message: 'יש לבחור לקוח' })
       return
     }
-    if (!contactId) {
-      setFormAlert({ type: 'error', message: 'יש לבחור איש קשר' })
+    if (!isNewContact && !contactId) {
+      setFormAlert({ type: 'error', message: 'יש לבחור איש קשר או ליצור איש קשר חדש' })
+      return
+    }
+    if (isNewContact && !newContactName.trim()) {
+      setFormAlert({ type: 'error', message: 'יש להזין שם לאיש הקשר החדש' })
       return
     }
 
@@ -214,8 +254,18 @@ const QuoteForm = () => {
       created_by: [createdById],
       customer: [customerId],
       customer_name: selectedCustomer?.name || '',
-      contact: [contactId],
-      contact_name: selectedContact?.name || '',
+      ...(isNewContact
+        ? {
+            new_contact: {
+              name: newContactName.trim(),
+              email,
+              phone,
+            },
+          }
+        : {
+            contact: [contactId],
+            contact_name: selectedContact?.name || '',
+          }),
       created_by_name: selectedEmployee?.name || '',
       transporting_additionals: transportingAdditionals,
       notes,
@@ -225,9 +275,14 @@ const QuoteForm = () => {
       tax_price: totals.tax_price,
       total_with_tax: totals.total_with_tax,
       payment_conditions: paymentConditions,
-      payment_deadline: paymentDeadline || '',
-      sketch_deliver_deadline: sketchDeliverDeadline || '',
-      project_deadline: projectDeadline || '',
+      sketch_deliver_deadline: formatOffsetDeadlineString(
+        sketchDeadlineAmount,
+        sketchDeadlineUnit
+      ),
+      project_deadline: formatOffsetDeadlineString(
+        projectDeadlineAmount,
+        projectDeadlineUnit
+      ),
       delivery_to_client_by: deliveryToClientBy,
       send_to_client: sendToClient,
       send_to_client_email_additions: sendToClientEmailAdditions,
@@ -353,6 +408,11 @@ const QuoteForm = () => {
     <div className="quote-form">
       <form className="quote-doc" onSubmit={handleSubmit}>
         <h1 className="quote-doc-title">טופס הצעת מחיר</h1>
+        {previewQuoteReference ? (
+          <p className="quote-doc-preview-ref" dir="ltr">
+            מספר הצעה צפוי (משוער): <strong>{previewQuoteReference}</strong>
+          </p>
+        ) : null}
 
         {formAlert && (
           <div
@@ -393,20 +453,53 @@ const QuoteForm = () => {
           <div className="quote-doc-meta-row">
             <span className="quote-doc-label">איש קשר</span>
             <div className="quote-doc-field-inline">
-              <SearchableSelect
-                options={contacts.map((c) => ({ id: c.id, name: c.name }))}
-                value={contactId}
-                onChange={(id) => setContactId(id)}
-                placeholder={
-                  loadingContacts
-                    ? 'טוען…'
-                    : customerId
-                      ? 'בחר איש קשר…'
-                      : 'בחר קודם לקוח'
-                }
-                disabled={!customerId || loadingContacts}
-                aria-label="איש קשר"
-              />
+              {!isNewContact ? (
+                <SearchableSelect
+                  options={contacts.map((c) => ({ id: c.id, name: c.name }))}
+                  value={contactId}
+                  onChange={(id) => {
+                    setIsNewContact(false)
+                    setNewContactName('')
+                    setContactId(id)
+                  }}
+                  allowCreateNew
+                  onCreateNew={(name) => {
+                    setIsNewContact(true)
+                    setNewContactName(name)
+                    setContactId('')
+                  }}
+                  placeholder={
+                    loadingContacts
+                      ? 'טוען…'
+                      : customerId
+                        ? 'בחר או הקלד שם — איש קשר חדש…'
+                        : 'בחר קודם לקוח'
+                  }
+                  disabled={!customerId || loadingContacts}
+                  aria-label="איש קשר"
+                />
+              ) : (
+                <div className="quote-new-contact-wrap">
+                  <input
+                    className="quote-doc-input-inline quote-new-contact-name"
+                    type="text"
+                    value={newContactName}
+                    onChange={(e) => setNewContactName(e.target.value)}
+                    placeholder="שם איש קשר חדש"
+                    aria-label="שם איש קשר חדש"
+                  />
+                  <button
+                    type="button"
+                    className="quote-new-contact-back"
+                    onClick={() => {
+                      setIsNewContact(false)
+                      setNewContactName('')
+                    }}
+                  >
+                    בחר מרשימה
+                  </button>
+                </div>
+              )}
             </div>
           </div>
           <div className="quote-doc-meta-row">
@@ -551,39 +644,74 @@ const QuoteForm = () => {
         <div className="quote-doc-meta">
           <div className="quote-doc-meta-row">
             <span className="quote-doc-label">תנאי תשלום</span>
-            <textarea
-              className="quote-doc-textarea"
-              rows={2}
-              value={paymentConditions}
-              onChange={(e) => setPaymentConditions(e.target.value)}
-            />
+            <div className="quote-doc-field-stack">
+              <textarea
+                className="quote-doc-textarea"
+                rows={2}
+                value={paymentConditions}
+                onChange={(e) => setPaymentConditions(e.target.value)}
+                autoComplete="off"
+              />
+              <p className="quote-field-note">
+                תיאור תנאים בטקסט בלבד — אין כאן שדה תאריך לתשלום.
+              </p>
+            </div>
           </div>
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">מועד תשלום</span>
-            <input
-              className="quote-doc-input-inline"
-              type="date"
-              value={paymentDeadline}
-              onChange={(e) => setPaymentDeadline(e.target.value)}
-            />
+          <div className="quote-doc-meta-row quote-deadline-offset-row">
+            <span className="quote-doc-label">סקיצה — תוך</span>
+            <div className="quote-deadline-offset">
+              <input
+                className="quote-deadline-num"
+                type="number"
+                min="1"
+                step="1"
+                inputMode="numeric"
+                value={sketchDeadlineAmount}
+                onChange={(e) => setSketchDeadlineAmount(e.target.value)}
+                placeholder="מספר"
+                aria-label="מספר ימים או חודשים למסירת סקיצה"
+              />
+              <select
+                className="quote-deadline-unit"
+                value={sketchDeadlineUnit}
+                onChange={(e) => setSketchDeadlineUnit(e.target.value)}
+                aria-label="יחידת זמן למסירת סקיצה"
+              >
+                <option value="days">ימים</option>
+                <option value="months">חודשים</option>
+              </select>
+            </div>
+            <p className="quote-deadline-hint">
+              נשמר כטקסט ב-Airtable (למשל «10 ימים»). התאריך הסופי יחושב במערכת.
+            </p>
           </div>
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">מועד מסירת סקיצה</span>
-            <input
-              className="quote-doc-input-inline"
-              type="date"
-              value={sketchDeliverDeadline}
-              onChange={(e) => setSketchDeliverDeadline(e.target.value)}
-            />
-          </div>
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">מועד מסירת פרויקט</span>
-            <input
-              className="quote-doc-input-inline"
-              type="date"
-              value={projectDeadline}
-              onChange={(e) => setProjectDeadline(e.target.value)}
-            />
+          <div className="quote-doc-meta-row quote-deadline-offset-row">
+            <span className="quote-doc-label">פרויקט — תוך</span>
+            <div className="quote-deadline-offset">
+              <input
+                className="quote-deadline-num"
+                type="number"
+                min="1"
+                step="1"
+                inputMode="numeric"
+                value={projectDeadlineAmount}
+                onChange={(e) => setProjectDeadlineAmount(e.target.value)}
+                placeholder="מספר"
+                aria-label="מספר ימים או חודשים למסירת פרויקט"
+              />
+              <select
+                className="quote-deadline-unit"
+                value={projectDeadlineUnit}
+                onChange={(e) => setProjectDeadlineUnit(e.target.value)}
+                aria-label="יחידת זמן למסירת פרויקט"
+              >
+                <option value="days">ימים</option>
+                <option value="months">חודשים</option>
+              </select>
+            </div>
+            <p className="quote-deadline-hint">
+              נשמר כטקסט ב-Airtable (למשל «3 חודשים»). התאריך הסופי יחושב במערכת.
+            </p>
           </div>
           <div className="quote-doc-meta-row quote-delivery-row">
             <span className="quote-doc-label">הובלה ללקוח</span>
