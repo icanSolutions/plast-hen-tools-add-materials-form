@@ -4,8 +4,13 @@ Express server that generates supplier order PDFs from a **Google Docs template*
 
 ## Endpoints
 
-- **POST /api/supplier-order/pdf** — Copies the template Doc, fills placeholders and the order-lines table, exports as PDF, and returns it as a download (`Content-Disposition: attachment`).
-- **POST /api/supplier-order/send** — Same flow, then uploads the PDF to Google Drive, patches the Airtable order record with the PDF URL, and sends an email to the supplier (from the suppliers table email field).
+- **POST /api/supplier-order/submit** — **Full workflow** for automations (n8n, etc.): creates the supplier order + line rows in Airtable (unless `orderId` is provided), generates the PDF from the Google Docs template, uploads to Drive, patches **טופס הזמנה**, and by default emails the supplier. Body: `{ order: { supplierId, date?, notes?, email? }, lines: [...], action?: "save" | "send" }`. Response: `{ ok, orderId, created, lineCount, pdfUrl, emailed, order_reference }`.
+- **POST /api/supplier-order/pdf** — Copies the template Doc, fills placeholders and the order-lines table, exports as PDF, uploads to Drive, patches Airtable **טופס הזמנה**, and returns `{ ok, pdfUrl }` (requires existing `orderId`).
+- **POST /api/supplier-order/send** — Same as pdf for an existing `orderId`, then emails the supplier.
+- **POST /api/supplier-quote-request/submit** — For each selected supplier: copy **quote demand** template (`GOOGLE_DOCS_QUOTE_DEMAND_TEMPLATE_ID`), fill placeholders + `{{LINE_ROW}}` table, PDF to Drive, create row in **בקשת הצעת מחיר מספק**.
+- **GET /api/supplier-quote-approve/requests** — List pending quote requests for the approval form.
+- **GET /api/supplier-quote-approve/requests/:id** — Quote request detail + resolved material lines.
+- **POST /api/supplier-quote-approve/submit** — Approve quote (`price`, status **אושר**), create supplier order, PDF, email. Body: `{ quoteRequestId, price, action?: "send" }`.
 
 Request body for both:
 
@@ -34,7 +39,7 @@ Request body for both:
 
 1. Copy `.env.example` to `.env` and fill in values.
 2. **Airtable**: Use the same base and API key as the frontend. Set table IDs for supplier orders and suppliers. Set `AIRTABLE_ORDER_FORM_FIELD` to the field name where the PDF link is stored (default: `טופס הזמנה`; use `מסמך הזמנה` if your base uses that). Set `AIRTABLE_ORDER_REFERENCE_FIELD` to the field that holds the order reference for the template (default: `reference`). Set `AIRTABLE_SUPPLIERS_EMAIL_FIELD` (e.g. `מייל`).
-3. **Google Drive & Docs template**: Set `GOOGLE_DRIVE_FOLDER_ID` and `GOOGLE_DOCS_TEMPLATE_ID`. Put the template Doc in that folder (owned by the Google account you authenticate with). **Template placeholders**: `{{supplierName}}`, `{{date}}`, `{{notes}}`, `{{order_reference}}`, **`{{ORDER_LINES}}`** (one line exactly `{{ORDER_LINES}}` for the table).
+3. **Google Drive & Docs template**: Set `GOOGLE_DRIVE_FOLDER_ID` and `GOOGLE_DOCS_TEMPLATE_ID`. Put the template Doc in that folder (owned by the Google account you authenticate with). **Template placeholders**: `{{supplierName}}`, `{{date}}`, `{{notes}}`, **`{{order_ref}}`** (or `{{order_reference}}`) from Airtable field `reference` (`AIRTABLE_ORDER_REFERENCE_FIELD`). In a **table**: header row (fixed text), then one data row with **`{{LINE_ROW}}`** in a cell (e.g. first column). The API duplicates that row for each order line and fills חומר / מידות / כמות / הערות.
    - **Auth option A — OAuth (recommended for Gmail)**: Uses **your** Google account and **your** Drive storage. Enable **Drive API** + **Google Docs API**. Create an **OAuth 2.0 Web client**; add redirect URI `http://localhost:3001/api/google/oauth/callback` (and your Railway URL + same path for production). In `.env`: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` (must match Console exactly), `GOOGLE_OAUTH_SETUP_KEY` (long secret). Start server, then open:
      - `http://localhost:3001/api/google/oauth/start?setup_key=YOUR_SETUP_KEY`
      Google redirects back; copy **`GOOGLE_OAUTH_REFRESH_TOKEN`** into `.env` and restart. If no refresh token appears, revoke the app under Google Account → Third-party access and run start again.

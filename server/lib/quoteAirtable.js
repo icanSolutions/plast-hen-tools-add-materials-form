@@ -51,11 +51,37 @@ export function getQuoteReferenceFieldName() {
   return process.env.AIRTABLE_QUOTE_REFERENCE_FIELD || 'reference'
 }
 
+/** When the reference env is a field id (`fld…`), list/get must use `returnFieldsByFieldId` or `fields[fld]` is empty. */
+function quoteReadUseFieldIds() {
+  return getQuoteReferenceFieldName().trim().startsWith('fld')
+}
+
+function quoteReadParams() {
+  return quoteReadUseFieldIds() ? { returnFieldsByFieldId: true } : {}
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /** Airtable column used to list “latest quote first” when predicting the next QT-* (default: created-at field from quoteFieldMap). */
 function getQuoteSortFieldForLatestQuote() {
   const explicit = process.env.QUOTE_REFERENCE_SORT_FIELD?.trim()
   if (explicit) return explicit
   return quoteFieldMap().created_at
+}
+
+/** Log parsed reference rows when predicting the next QT-* (`QUOTE_REFERENCE_LOG_LIST=1`). */
+function quoteReferenceListLoggingEnabled() {
+  const v = String(process.env.QUOTE_REFERENCE_LOG_LIST || '').trim()
+  if (/^(0|false|no|off)$/i.test(v)) return false
+  return /^(1|true|yes|on)$/i.test(v)
+}
+
+function quoteReferenceLogMaxRows() {
+  const n = parseInt(String(process.env.QUOTE_REFERENCE_LOG_LIST_MAX || '500'), 10)
+  if (!Number.isFinite(n) || n < 1) return 500
+  return Math.min(n, 5000)
 }
 
 function referenceFormatOptions() {
@@ -84,6 +110,43 @@ function displayQuoteRefFromCell(cell, prefix, padN) {
   return stringifyReferenceCell(cell)
 }
 
+/** Field keys to try for the quote reference cell (primary env + optional fallbacks). */
+function referenceFieldCandidates(refField) {
+  const out = []
+  const push = (k) => {
+    const s = k != null ? String(k).trim() : ''
+    if (s && !out.includes(s)) out.push(s)
+  }
+  push(refField)
+  const envAliases = (process.env.QUOTE_REFERENCE_FALLBACK_FIELDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  for (const k of envAliases) push(k)
+  if (!quoteReadUseFieldIds()) {
+    for (const k of ['reference', 'Reference', 'מספר הצעה']) push(k)
+  }
+  return out
+}
+
+/** First parseable series number found on the row (ordered candidates — avoids wrong numeric fields). */
+function firstParsedNFromRow(fields, refField, prefix) {
+  for (const key of referenceFieldCandidates(refField)) {
+    const n = parseQuoteSeriesNumber(fields?.[key], prefix)
+    if (n != null && !Number.isNaN(n)) return n
+  }
+  return null
+}
+
+function formatRefFromRowFields(fields, refField, prefix, padN) {
+  for (const key of referenceFieldCandidates(refField)) {
+    const cell = fields?.[key]
+    const s = displayQuoteRefFromCell(cell, prefix, padN).trim()
+    if (s) return s
+  }
+  return ''
+}
+
 /**
  * After Airtable create: prefer the formula/reference on the new row (truth), else GET once, else sorted prediction.
  * Reference is never written by the API — only read for display and n8n.
@@ -92,21 +155,30 @@ export async function resolveQuoteReferenceAfterCreate(created, recordId) {
   const refField = getQuoteReferenceFieldName()
   const { prefix, padN } = referenceFormatOptions()
 
-  const fromFields = (fields) =>
-    displayQuoteRefFromCell(fields?.[refField], prefix, padN).trim()
+  const fromFields = (fields) => formatRefFromRowFields(fields, refField, prefix, padN)
 
   let ref = fromFields(created?.fields)
   if (ref) return ref
 
-  try {
-    const rec = await getQuoteRecordById(recordId)
-    ref = fromFields(rec.fields)
-    if (ref) return ref
-  } catch (e) {
-    console.warn('[quote] re-fetch record for reference:', e.message)
+  for (let attempt = 0; attempt < 3 && !ref; attempt++) {
+    if (attempt > 0) await delay(280)
+    try {
+      const rec = await getQuoteRecordById(recordId)
+      ref = fromFields(rec.fields)
+      if (ref) return ref
+    } catch (e) {
+      console.warn('[quote] re-fetch record for reference:', e.message)
+    }
   }
 
-  return computeNextQuoteReference()
+  const predicted = await computeNextQuoteReference()
+  const tailNum = predicted.match(/-(\d+)$/)?.[1]
+  if (tailNum === '1') {
+    console.warn(
+      '[quote] quote_reference fell back to …-1; check AIRTABLE_QUOTE_REFERENCE_FIELD (if it is `fld…`, reads now use returnFieldsByFieldId), QUOTE_REFERENCE_PREFIX, and QUOTE_REFERENCE_SORT_FIELD / QUOTE_FIELD_CREATED_AT'
+    )
+  }
+  return predicted
 }
 
 /**
@@ -114,11 +186,31 @@ export async function resolveQuoteReferenceAfterCreate(created, recordId) {
  */
 export function stringifyReferenceCell(value) {
   if (value == null) return ''
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    if (value && typeof value === 'object' && 'error' in value) return ''
+  }
   if (Array.isArray(value)) {
+    if (
+      value.length > 0 &&
+      value.every((x) => typeof x === 'string' && x.length === 1)
+    ) {
+      return value.join('').trim()
+    }
     const x = value[0]
     return x != null ? String(x).trim() : ''
   }
   return String(value).trim()
+}
+
+function pushQuoteReferenceLogEntry(arr, r, refField, prefix, padN) {
+  const fields = r.fields || {}
+  const primaryRaw = fields[refField]
+  arr.push({
+    id: r.id,
+    n: firstParsedNFromRow(fields, refField, prefix),
+    display: formatRefFromRowFields(fields, refField, prefix, padN) || null,
+    primaryCell: stringifyReferenceCell(primaryRaw).trim() || null,
+  })
 }
 
 /**
@@ -304,7 +396,10 @@ export async function getQuoteRecordById(recordId) {
   if (!tableId) throw new Error('AIRTABLE_QUOTES_TABLE_ID is required')
 
   const url = `${tableUrl(tableId)}/${recordId}`
-  const res = await axios.get(url, { headers: headers() })
+  const res = await axios.get(url, {
+    headers: headers(),
+    params: quoteReadParams(),
+  })
   return res.data
 }
 
@@ -322,6 +417,7 @@ function parseQuoteSeriesNumber(cell, prefix) {
 
   const patterns = [
     new RegExp(`^${escapedPrefix}\\s*-\\s*(\\d+)$`, 'i'),
+    new RegExp(`^${escapedPrefix}\\s+(\\d+)$`, 'i'),
     new RegExp(`^${escapedPrefix}(\\d+)$`, 'i'),
     /^(\d+)$/,
     /(\d+)\s*$/,
@@ -339,20 +435,29 @@ function parseQuoteSeriesNumber(cell, prefix) {
 /**
  * Fallback: paginated scan (unordered) for max N in PREFIX-N.
  */
-async function scanPagesForMaxQuoteSeriesNumber(tableId, refField, prefix) {
+async function scanPagesForMaxQuoteSeriesNumber(
+  tableId,
+  refField,
+  prefix,
+  padN,
+  refsLog
+) {
   let maxNum = 0
   let offset
   const maxPages = Math.max(1, Number(process.env.QUOTE_REFERENCE_MAX_SCAN_PAGES || 30))
+  const logCap = quoteReferenceLogMaxRows()
 
   for (let page = 0; page < maxPages; page++) {
-    const params = { maxRecords: 100 }
+    const params = { maxRecords: 100, ...quoteReadParams() }
     if (offset) params.offset = offset
 
     const res = await axios.get(tableUrl(tableId), { params, headers: headers() })
     const records = res.data.records || []
     for (const r of records) {
-      const cell = r.fields?.[refField]
-      const n = parseQuoteSeriesNumber(cell, prefix)
+      if (refsLog && refsLog.length < logCap) {
+        pushQuoteReferenceLogEntry(refsLog, r, refField, prefix, padN)
+      }
+      const n = firstParsedNFromRow(r.fields, refField, prefix)
       if (n != null && !Number.isNaN(n)) maxNum = Math.max(maxNum, n)
     }
     offset = res.data.offset
@@ -363,8 +468,8 @@ async function scanPagesForMaxQuoteSeriesNumber(tableId, refField, prefix) {
 
 /**
  * Predicts the next reference (e.g. QT-42) for display and n8n only — does not write to Airtable.
- * Primary: list quotes sorted by creation date (newest first), take the first row with a parseable ref, return PREFIX-(N+1).
- * Fallback: full paginated max scan (legacy) if sort fails or no parseable ref in the first page.
+ * Primary: quotes sorted by `created_at` (paginated), take the **maximum** parseable N among those rows, return PREFIX-(N+1).
+ * Fallback: full unordered paginated max scan if sort fails or yields no parseable refs.
  *
  * Configure `QUOTE_REFERENCE_SORT_FIELD` (e.g. `created_at`) or `QUOTE_FIELD_CREATED_AT` so it matches your base column.
  */
@@ -376,22 +481,35 @@ export async function computeNextQuoteReference() {
   const refField = getQuoteReferenceFieldName()
   const { prefix, padN } = referenceFormatOptions()
   const sortField = getQuoteSortFieldForLatestQuote()
+  const logRefs = quoteReferenceListLoggingEnabled()
+  const logCap = quoteReferenceLogMaxRows()
+  const sortedRefs = logRefs ? [] : null
+  const scanRefs = logRefs ? [] : null
 
+  let maxFromSorted = 0
   try {
-    const res = await axios.get(tableUrl(tableId), {
-      params: {
+    let offset
+    const maxSortPages = Math.max(1, Number(process.env.QUOTE_REFERENCE_SORT_MAX_PAGES || 15))
+    for (let page = 0; page < maxSortPages; page++) {
+      const params = {
         maxRecords: 100,
         'sort[0][field]': sortField,
         'sort[0][direction]': 'desc',
-      },
-      headers: headers(),
-    })
-    const records = res.data.records || []
-    for (const r of records) {
-      const n = parseQuoteSeriesNumber(r.fields?.[refField], prefix)
-      if (n != null && !Number.isNaN(n)) {
-        return formatReferenceFromSeriesNumber(n + 1, prefix, padN)
+        ...quoteReadParams(),
       }
+      if (offset) params.offset = offset
+
+      const res = await axios.get(tableUrl(tableId), { params, headers: headers() })
+      const records = res.data.records || []
+      for (const r of records) {
+        if (sortedRefs && sortedRefs.length < logCap) {
+          pushQuoteReferenceLogEntry(sortedRefs, r, refField, prefix, padN)
+        }
+        const n = firstParsedNFromRow(r.fields, refField, prefix)
+        if (n != null && !Number.isNaN(n)) maxFromSorted = Math.max(maxFromSorted, n)
+      }
+      offset = res.data.offset
+      if (!offset) break
     }
   } catch (err) {
     console.warn(
@@ -400,6 +518,99 @@ export async function computeNextQuoteReference() {
     )
   }
 
-  const maxNum = await scanPagesForMaxQuoteSeriesNumber(tableId, refField, prefix)
+  const maxFromScan = await scanPagesForMaxQuoteSeriesNumber(
+    tableId,
+    refField,
+    prefix,
+    padN,
+    scanRefs
+  )
+  const maxNum = Math.max(maxFromSorted, maxFromScan)
+  if (logRefs) {
+    console.log('[quote] references list (sorted, newest first)', {
+      sortField,
+      refField,
+      prefix,
+      maxParsedN: maxFromSorted,
+      rowCap: logCap,
+      rows: sortedRefs,
+    })
+    console.log('[quote] references list (unordered scan pages)', {
+      refField,
+      prefix,
+      maxParsedN: maxFromScan,
+      rowCap: logCap,
+      rows: scanRefs,
+    })
+  }
+  if (maxNum === 0) {
+    console.warn(
+      '[quote] no existing quote reference parsed (max=0 → next QT-1). Check AIRTABLE_QUOTE_REFERENCE_FIELD / QUOTE_REFERENCE_FALLBACK_FIELDS, QUOTE_REFERENCE_PREFIX, and QUOTE_REFERENCE_SORT_FIELD. In development, GET /api/quote/next-reference?debug=1 for samples.'
+    )
+  }
   return formatReferenceFromSeriesNumber(maxNum + 1, prefix, padN)
+}
+
+/**
+ * Non-production diagnostics: how Airtable rows look for reference parsing (no secrets).
+ * Use GET /api/quote/next-reference?debug=1 with NODE_ENV !== 'production'.
+ */
+export async function getQuoteReferenceDiagnostics() {
+  const refField = getQuoteReferenceFieldName()
+  const sortField = getQuoteSortFieldForLatestQuote()
+  const { prefix, padN } = referenceFormatOptions()
+  const tableId = process.env.AIRTABLE_QUOTES_TABLE_ID
+  const out = {
+    refField,
+    sortField,
+    prefix,
+    fieldIdMode: quoteReadUseFieldIds(),
+    quoteReferenceSortFieldEnv: (process.env.QUOTE_REFERENCE_SORT_FIELD || '').trim(),
+    quoteFieldCreatedAtEnv: (process.env.QUOTE_FIELD_CREATED_AT || '').trim(),
+    defaultCreatedAtColumnName: quoteFieldMap().created_at,
+    candidateKeys: referenceFieldCandidates(refField),
+  }
+  if (!baseId || !apiKey || !tableId) {
+    out.error = 'missing AIRTABLE_BASE_ID, AIRTABLE_API_KEY, or AIRTABLE_QUOTES_TABLE_ID'
+    return out
+  }
+  try {
+    const res = await axios.get(tableUrl(tableId), {
+      params: { maxRecords: 5, ...quoteReadParams() },
+      headers: headers(),
+    })
+    const records = res.data.records || []
+    out.unsortedListCount = records.length
+    out.unsortedSamples = records.map((r) => ({
+      id: r.id,
+      fieldKeysHead: Object.keys(r.fields || {}).slice(0, 18),
+      primaryCell: r.fields?.[refField],
+      displayRefFromCandidates: formatRefFromRowFields(r.fields, refField, prefix, padN),
+      firstParsedN: firstParsedNFromRow(r.fields, refField, prefix),
+    }))
+  } catch (e) {
+    out.unsortedListError = e.response?.data?.error || e.message
+  }
+  try {
+    const res = await axios.get(tableUrl(tableId), {
+      params: {
+        maxRecords: 5,
+        'sort[0][field]': sortField,
+        'sort[0][direction]': 'desc',
+        ...quoteReadParams(),
+      },
+      headers: headers(),
+    })
+    const records = res.data.records || []
+    out.sortedListCount = records.length
+    out.sortedSamples = records.map((r) => ({
+      id: r.id,
+      primaryCell: r.fields?.[refField],
+      displayRefFromCandidates: formatRefFromRowFields(r.fields, refField, prefix, padN),
+      firstParsedN: firstParsedNFromRow(r.fields, refField, prefix),
+    }))
+  } catch (e) {
+    out.sortedListError = e.response?.data?.error || e.message
+  }
+  return out
 }

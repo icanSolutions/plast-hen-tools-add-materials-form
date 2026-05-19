@@ -1,3 +1,41 @@
+.multi-record-page-title {
+  margin: 0 0 8px;
+  text-align: center;
+  color: #212529;
+}
+
+.multi-record-page-subtitle {
+  margin: 0 0 24px;
+  text-align: center;
+  color: #6c757d;
+  line-height: 1.5;
+}
+
+.multi-record-form-alert {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  font-weight: 500;
+  text-align: center;
+  direction: rtl;
+}
+
+.multi-record-form-alert.error {
+  background: #f8d7da;
+  color: #721c24;
+  border: 2px solid #f5c6cb;
+}
+
+.multi-record-form-alert.success {
+  background: #d4edda;
+  color: #155724;
+  border: 2px solid #c3e6cb;
+}
+
+.multi-record-submit-btn {
+  width: 100%;
+}
+
 .multi-record-form {
   width: 100%;
 }

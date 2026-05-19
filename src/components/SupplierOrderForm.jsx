@@ -1,27 +1,11 @@
 import React, { useState, useEffect } from 'react'
-import {
-  fetchSuppliers,
-  fetchMaterials,
-  createSupplierOrder,
-} from '../services/airtable'
+import { fetchSuppliers, createSupplierOrder } from '../services/airtable'
 import { getApiBaseUrl, apiUrl } from '../utils/apiBase.js'
 import SearchableSelect from './SearchableSelect'
 import './SupplierOrderForm.css'
 
-/** Triggers a file download in the browser from a Blob (e.g. PDF from API). */
-export function triggerPdfDownload(blob, filename = 'הזמנת-ספק.pdf') {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
 const createEmptyLine = () => ({
-  materialId: '',
   materialName: '',
-  freeDescription: '',
   dimensions: '',
   quantity: '',
   lineNotes: '',
@@ -36,7 +20,6 @@ const SupplierOrderForm = () => {
   })
   const [lines, setLines] = useState([createEmptyLine()])
   const [suppliers, setSuppliers] = useState([])
-  const [materials, setMaterials] = useState([])
   const [isLoadingOptions, setIsLoadingOptions] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitStatus, setSubmitStatus] = useState(null)
@@ -45,12 +28,8 @@ const SupplierOrderForm = () => {
     const loadOptions = async () => {
       try {
         setIsLoadingOptions(true)
-        const [suppliersData, materialsData] = await Promise.all([
-          fetchSuppliers(),
-          fetchMaterials(),
-        ])
+        const suppliersData = await fetchSuppliers()
         setSuppliers(suppliersData)
-        setMaterials(materialsData)
       } catch (error) {
         setSubmitStatus({
           type: 'error',
@@ -84,16 +63,8 @@ const SupplierOrderForm = () => {
     })
   }
 
-  const handleMaterialChange = (index, materialId) => {
-    const material = materials.find((m) => m.id === materialId)
-    updateLine(index, 'materialId', materialId)
-    updateLine(index, 'materialName', material ? material.name : '')
-  }
-
   const getMaterialsSummary = () => {
-    const names = lines
-      .map((line) => line.materialName || line.freeDescription)
-      .filter(Boolean)
+    const names = lines.map((line) => line.materialName?.trim()).filter(Boolean)
     if (!names.length) return ''
     return names.join(', ')
   }
@@ -112,11 +83,10 @@ const SupplierOrderForm = () => {
 
       const validLines = lines.filter(
         (line) =>
-          line.materialId ||
-          line.freeDescription ||
-          line.dimensions ||
+          line.materialName?.trim() ||
+          line.dimensions?.trim() ||
           line.quantity ||
-          line.lineNotes
+          line.lineNotes?.trim()
       )
 
       if (validLines.length === 0) {
@@ -129,15 +99,13 @@ const SupplierOrderForm = () => {
       }
 
       const invalidLines = validLines.filter(
-        (line) =>
-          (!line.materialId && !line.freeDescription) || !line.quantity
+        (line) => !line.materialName?.trim() || !line.quantity
       )
 
       if (invalidLines.length > 0) {
         setSubmitStatus({
           type: 'error',
-          message:
-            'בכל שורת הזמנה חובה לבחור חומר גלם או למלא תיאור חופשי וגם כמות',
+          message: 'בכל שורת הזמנה חובה למלא שם חומר וכמות',
         })
         setIsSubmitting(false)
         return
@@ -145,29 +113,31 @@ const SupplierOrderForm = () => {
 
       const materialsSummary = getMaterialsSummary()
       const payloadLines = validLines.map((line) => ({
-        ...line,
+        materialName: line.materialName.trim(),
+        dimensions: line.dimensions,
         quantity: line.quantity,
+        lineNotes: line.lineNotes,
+        status: line.status,
       }))
-      console.log('[SupplierOrderForm] submit: supplierId=', order.supplierId, 'lines=', payloadLines.length, 'firstLine.materialId=', payloadLines[0]?.materialId)
+      console.log(
+        '[SupplierOrderForm] submit: supplierId=',
+        order.supplierId,
+        'lines=',
+        payloadLines.length
+      )
 
       const result = await createSupplierOrder(
         { ...order, materialsSummary },
         payloadLines
       )
-      console.log('The new order from supplier result:', result)
 
       const apiBase = getApiBaseUrl()
-      console.log(
-        '[SupplierOrderForm] API base:',
-        apiBase === null ? '(VITE_PDF_API_BASE_URL not set)' : apiBase === '' ? '(same origin)' : apiBase
-      )
 
       if (apiBase !== null && action === 'save-pdf') {
-        setSubmitStatus({ type: 'success', message: 'מוריד PDF...' })
+        setSubmitStatus({ type: 'success', message: 'יוצר מסמך ושומר ב-Airtable...' })
         try {
-          const pdfUrl = apiUrl('/api/supplier-order/pdf')
-          console.log('[SupplierOrderForm] calling backend PDF:', pdfUrl)
-          const res = await fetch(pdfUrl, {
+          const saveUrl = apiUrl('/api/supplier-order/pdf')
+          const res = await fetch(saveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -177,32 +147,33 @@ const SupplierOrderForm = () => {
             }),
           })
           if (res.ok) {
-            const blob = await res.blob()
-            triggerPdfDownload(blob)
+            const data = await res.json()
             setSubmitStatus({
               type: 'success',
-              message: `הזמנה נוצרה וה-PDF הורד. (${result.lineCount} שורות)`,
+              message: `הזמנה נוצרה וטופס הזמנה נשמר ב-Airtable (${result.lineCount} שורות).`,
             })
+            if (data.pdfUrl) {
+              console.log('[SupplierOrderForm] טופס הזמנה URL:', data.pdfUrl)
+            }
           } else {
             const errBody = await res.text()
-            console.error('[SupplierOrderForm] backend PDF non-ok:', res.status, res.statusText, errBody)
+            console.error('[SupplierOrderForm] backend save non-ok:', res.status, errBody)
             setSubmitStatus({
               type: 'success',
-              message: `הזמנה נוצרה (${result.lineCount} שורות). הורדת PDF לא זמינה כרגע.`,
+              message: `הזמנה נוצרה (${result.lineCount} שורות). שמירת טופס הזמנה ב-Airtable לא בוצעה.`,
             })
           }
         } catch (apiErr) {
-          console.error('[SupplierOrderForm] backend PDF error:', apiErr)
+          console.error('[SupplierOrderForm] backend save error:', apiErr)
           setSubmitStatus({
             type: 'success',
-            message: `הזמנה נוצרה (${result.lineCount} שורות). שגיאה בהורדת PDF: ${apiErr.message}`,
+            message: `הזמנה נוצרה (${result.lineCount} שורות). שגיאה בשמירת טופס הזמנה: ${apiErr.message}`,
           })
         }
       } else if (apiBase !== null && action === 'send') {
         setSubmitStatus({ type: 'success', message: 'שולח לספק ומעלה ל-Drive...' })
         try {
           const sendUrl = apiUrl('/api/supplier-order/send')
-          console.log('[SupplierOrderForm] calling backend send:', sendUrl)
           const res = await fetch(sendUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -219,7 +190,7 @@ const SupplierOrderForm = () => {
             })
           } else {
             const errBody = await res.text()
-            console.error('[SupplierOrderForm] backend send non-ok:', res.status, res.statusText, errBody)
+            console.error('[SupplierOrderForm] backend send non-ok:', res.status, errBody)
             setSubmitStatus({
               type: 'success',
               message: `הזמנה נוצרה (${result.lineCount} שורות). שליחה לספק לא בוצעה.`,
@@ -238,7 +209,7 @@ const SupplierOrderForm = () => {
           message:
             apiBase !== null
               ? `נוצרה בהצלחה הזמנת ספק (${result.lineCount} שורות).`
-              : `הזמנה נוצרה (${result.lineCount} שורות). להפעלת PDF/Drive: הגדר VITE_PDF_API_BASE_URL ב-.env (למשל http://localhost:3001), הפעל את השרת (cd server && npm run dev) וטען מחדש את הדף.`,
+              : `הזמנה נוצרה (${result.lineCount} שורות). להפעלת מסמך/Drive: הגדר VITE_PDF_API_BASE_URL ב-.env (למשל http://localhost:3001), הפעל את השרת (cd server && npm run dev) וטען מחדש את הדף.`,
         })
       }
 
@@ -301,7 +272,7 @@ const SupplierOrderForm = () => {
         <table className="order-doc-table">
           <thead>
             <tr>
-              <th>חומר גלם / תיאור</th>
+              <th>שם חומר</th>
               <th>מידות</th>
               <th>כמות</th>
               <th>הערות</th>
@@ -312,25 +283,17 @@ const SupplierOrderForm = () => {
             {lines.map((line, index) => (
               <tr key={index}>
                 <td>
-                  <div className="order-doc-cell-fields">
-                    <SearchableSelect
-                      options={materials}
-                      value={line.materialId}
-                      onChange={(id) => handleMaterialChange(index, id)}
-                      placeholder="חומר גלם..."
-                      disabled={isLoadingOptions}
-                      aria-label="חומר גלם"
-                    />
-                    <input
-                      type="text"
-                      value={line.freeDescription}
-                      onChange={(e) =>
-                        updateLine(index, 'freeDescription', e.target.value)
-                      }
-                      placeholder="מוצר חופשי - אם לא קיים בחומרי גלם"
-                      className="order-doc-input"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    value={line.materialName}
+                    onChange={(e) =>
+                      updateLine(index, 'materialName', e.target.value)
+                    }
+                    placeholder="שם החומר"
+                    className="order-doc-input"
+                    disabled={isLoadingOptions}
+                    required
+                  />
                 </td>
                 <td>
                   <input
@@ -341,6 +304,7 @@ const SupplierOrderForm = () => {
                     }
                     placeholder="מידות"
                     className="order-doc-input"
+                    disabled={isLoadingOptions}
                   />
                 </td>
                 <td>
@@ -354,6 +318,7 @@ const SupplierOrderForm = () => {
                     }
                     placeholder="כמות"
                     className="order-doc-input order-doc-input-qty"
+                    disabled={isLoadingOptions}
                     required
                   />
                 </td>
@@ -366,6 +331,7 @@ const SupplierOrderForm = () => {
                     }
                     placeholder="הערות לשורה"
                     className="order-doc-input"
+                    disabled={isLoadingOptions}
                   />
                 </td>
                 <td className="order-doc-table-actions">
@@ -414,7 +380,7 @@ const SupplierOrderForm = () => {
             className="submit-btn submit-btn-save"
             disabled={isSubmitting || isLoadingOptions}
           >
-            {isSubmitting ? 'יוצר...' : 'צור ושמור PDF'}
+            {isSubmitting ? 'יוצר...' : 'צור ושמור ב-Airtable'}
           </button>
           <button
             type="button"

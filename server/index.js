@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url'
 import express from 'express'
 import cors from 'cors'
 import supplierOrderRoutes from './routes/supplierOrder.js'
+import supplierQuoteRequestRoutes from './routes/supplierQuoteRequest.js'
+import supplierQuoteApproveRoutes from './routes/supplierQuoteApprove.js'
 import googleAuthRoutes from './routes/googleAuth.js'
 import quoteSubmitRoutes from './routes/quoteSubmit.js'
 
@@ -20,6 +22,8 @@ app.use(express.json({ limit: '2mb' }))
 
 app.use('/api/google', googleAuthRoutes)
 app.use('/api/supplier-order', supplierOrderRoutes)
+app.use('/api/supplier-quote-request', supplierQuoteRequestRoutes)
+app.use('/api/supplier-quote-approve', supplierQuoteApproveRoutes)
 app.use('/api/quote', quoteSubmitRoutes)
 
 app.get('/health', (req, res) => {

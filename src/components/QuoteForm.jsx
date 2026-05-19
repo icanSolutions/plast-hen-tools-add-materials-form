@@ -24,6 +24,217 @@ function formatOffsetDeadlineString(amountStr, unit) {
   return unit === 'months' ? `${n} חודשים` : `${n} ימים`
 }
 
+const CLIENT_SUPPLY_NOTE = 'אספקה בשער מפעלינו ע״י המזמין'
+
+function notesWithClientSupplyLine(baseNotes, deliveryByClient) {
+  const base = String(baseNotes ?? '')
+  if (!deliveryByClient) return base
+  if (base.includes(CLIENT_SUPPLY_NOTE)) return base
+  const trimmed = base.trimEnd()
+  return trimmed ? `${trimmed}\n${CLIENT_SUPPLY_NOTE}` : CLIENT_SUPPLY_NOTE
+}
+
+/** Single Airtable text field when הובלה ע״י החברה — הובלה, תוספות, מחיר לפני מע״מ. */
+function buildTransportingAdditionalsPayload(
+  deliveryBy,
+  transportLine,
+  extrasLine,
+  transportPriceBeforeTax
+) {
+  if (deliveryBy !== 'company') return ''
+  const t = String(transportLine ?? '').trim()
+  const e = String(extrasLine ?? '').trim()
+  const parts = []
+  if (t) parts.push(`הובלה: ${t}`)
+  if (e) parts.push(`תוספות: ${e}`)
+  if (transportPriceBeforeTax > 0) {
+    parts.push(
+      `מחיר הובלה (לפני מע״מ): ${transportPriceBeforeTax.toLocaleString('he-IL')}`
+    )
+  }
+  return parts.join('\n')
+}
+
+function parseMoneyInput(value) {
+  const n = parseFloat(String(value ?? '').replace(',', '.'))
+  if (!Number.isFinite(n) || n < 0) return 0
+  return n
+}
+
+function emailDocumentShell(innerTdHtml) {
+  return `<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+</head>
+
+<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background-color:#f6f6f6;direction:rtl;">
+
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f6f6f6;padding:20px;">
+<tr>
+<td align="center">
+
+<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:6px;padding:30px;text-align:right;line-height:1.6;color:#333;">
+
+<tr>
+<td style="font-size:16px;">
+${innerTdHtml}
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+
+</body>
+</html>`
+}
+
+function escapeHtmlForEmailPreview(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function nlToBrEscaped(s) {
+  return escapeHtmlForEmailPreview(s).replace(/\r\n|\r|\n/g, '<br>')
+}
+
+/**
+ * Replaces common n8n Webhook body expressions with current form values for a client-safe preview.
+ * Unknown `{{ ... }}` blocks are stripped to a muted placeholder.
+ */
+function substituteEmailPreviewPlaceholders(html, v) {
+  let out = html
+  const sub = (re, replacement) => {
+    out = out.replace(re, replacement)
+  }
+
+  sub(
+    /\{\{\s*\$\(['"]Webhook['"]\)\.item\.json\.body\.contact\s*\}\}/g,
+    escapeHtmlForEmailPreview(v.contact)
+  )
+  sub(
+    /\{\{\s*\$\(['"]Webhook['"]\)\.item\.json\.body\.quote_ref\s*\}\}/g,
+    escapeHtmlForEmailPreview(v.quoteRef)
+  )
+  sub(
+    /\{\{\s*\$\(['"]Webhook['"]\)\.item\.json\.body\.quote_reference\s*\}\}/g,
+    escapeHtmlForEmailPreview(v.quoteRef)
+  )
+  sub(
+    /\{\{\s*\$\(['"]Webhook['"]\)\.item\.json\.body\.description\s*\}\}/g,
+    nlToBrEscaped(v.description)
+  )
+  sub(
+    /\{\{\s*\$\(['"]Webhook['"]\)\.item\.json\.body\.created_by\s*\|\|\s*""\s*\}\}/gi,
+    escapeHtmlForEmailPreview(v.createdBy)
+  )
+  sub(
+    /\{\{\s*\$\(['"]Webhook['"]\)\.item\.json\.body\.created_by\s*\}\}/g,
+    escapeHtmlForEmailPreview(v.createdBy)
+  )
+
+  out = out.replace(
+    /\{\{[\s\S]*?\}\}/g,
+    '<span style="opacity:0.45;font-size:0.9em;">[…]</span>'
+  )
+  return out
+}
+
+/** Loads substituted preview HTML into an iframe and enables designMode for WYSIWYG edits. */
+function writeEmailPreviewEditableIframe(iframe, html, dirtyRef) {
+  if (!iframe) return
+  const doc = iframe.contentDocument
+  if (!doc) return
+  doc.open()
+  doc.write(html)
+  doc.close()
+  try {
+    doc.designMode = 'on'
+  } catch {
+    /* ignore */
+  }
+  const markDirty = () => {
+    if (dirtyRef) dirtyRef.current = true
+  }
+  doc.addEventListener('input', markDirty)
+  doc.addEventListener('keyup', markDirty)
+}
+
+const FORMAL_EMAIL_INNER_HTML = `<p>
+שלום {{ $('Webhook').item.json.body.contact }},
+</p>
+
+<p>
+בהמשך לפנייתך, מצורפת הצעת מחיר מס'
+<strong>{{ $('Webhook').item.json.body.quote_ref }}</strong>
+עבור
+<strong>{{ $('Webhook').item.json.body.description }}</strong>.
+</p>
+
+<p>
+ההצעה הוכנה בהתאם לנתונים שנמסרו לנו וכוללת את פירוט המוצרים, המפרט הטכני והתמחור המלא.
+</p>
+
+<p>
+נשמח לעמוד לרשותך לכל שאלה מקצועית, התאמות נדרשות או הבהרות נוספות.<br>
+במידה ונדרש עדכון למפרט או לכמויות, ניתן לחזור אלינו במייל חוזר או בטלפון.
+</p>
+
+<p>
+אנו בפלסט-חן מקפידים על ייצור איכותי בהתאם לדרישות התעשייה ולסטנדרטים מחמירים,
+ומתחייבים לליווי מקצועי לאורך כל תהליך ההזמנה והאספקה.
+</p>
+
+<p>
+נשמח להמשך שיתוף פעולה.
+</p>
+
+<br>
+
+<p>
+בברכה,<br>
+<strong>{{ $('Webhook').item.json.body.created_by ||""}}</strong><br>
+פלסטחן – פתרונות מיכלי פלסטיק לתעשייה
+</p>`
+
+const SHORT_EMAIL_INNER_HTML = `<p>
+שלום {{ $('Webhook').item.json.body.contact }},
+</p>
+
+<p>
+מצורפת הצעת מחיר מס'
+<strong>{{ $('Webhook').item.json.body.quote_ref }}</strong>
+עבור
+<strong>{{ $('Webhook').item.json.body.description }}</strong>.
+</p>
+
+<p>
+לשאלות והבהרות — נשמח לעזור במייל או בטלפון.
+</p>
+
+<p>
+בברכה,<br>
+<strong>{{ $('Webhook').item.json.body.created_by ||""}}</strong><br>
+פלסטחן – פתרונות מיכלי פלסטיק לתעשייה
+</p>`
+
+function emailInnerForTemplate(template) {
+  if (template === 'short') return SHORT_EMAIL_INNER_HTML.trim()
+  if (template === 'custom') return FORMAL_EMAIL_INNER_HTML.trim()
+  return FORMAL_EMAIL_INNER_HTML.trim()
+}
+
+function buildClientEmailBodyHtml(template) {
+  return emailDocumentShell(emailInnerForTemplate(template))
+}
+
 const QuoteForm = () => {
   const [customers, setCustomers] = useState([])
   const [employees, setEmployees] = useState([])
@@ -34,7 +245,9 @@ const QuoteForm = () => {
   const [isNewContact, setIsNewContact] = useState(false)
   const [newContactName, setNewContactName] = useState('')
   const [description, setDescription] = useState('')
-  const [transportingAdditionals, setTransportingAdditionals] = useState('')
+  const [companyTransportLine, setCompanyTransportLine] = useState('')
+  const [companyTransportExtras, setCompanyTransportExtras] = useState('')
+  const [companyTransportPrice, setCompanyTransportPrice] = useState('')
   const [notes, setNotes] = useState('')
   const [internalNotes, setInternalNotes] = useState('')
   const [products, setProducts] = useState([emptyProduct()])
@@ -45,7 +258,7 @@ const QuoteForm = () => {
   const [projectDeadlineUnit, setProjectDeadlineUnit] = useState('days')
   const [deliveryToClientBy, setDeliveryToClientBy] = useState('')
   const [sendToClient, setSendToClient] = useState(false)
-  const [sendToClientEmailAdditions, setSendToClientEmailAdditions] = useState('')
+  const [clientEmailBodyTemplate, setClientEmailBodyTemplate] = useState('formal')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
 
@@ -59,6 +272,8 @@ const QuoteForm = () => {
   /** Shown on the form only — server decides final ref after create (formula / sorted prediction). */
   const [previewQuoteReference, setPreviewQuoteReference] = useState('')
   const resultTitleRef = useRef(null)
+  const emailPreviewIframeRef = useRef(null)
+  const emailPreviewDirtyRef = useRef(false)
 
   useLayoutEffect(() => {
     if (!submitResult) return
@@ -155,6 +370,45 @@ const QuoteForm = () => {
   const selectedCustomer = customers.find((c) => c.id === customerId)
   const selectedEmployee = employees.find((e) => e.id === createdById)
 
+  const previewContactName = isNewContact
+    ? newContactName.trim()
+    : (selectedContact?.name || '').trim()
+
+  const mergedClientEmailBodyHtml = useMemo(
+    () => buildClientEmailBodyHtml(clientEmailBodyTemplate),
+    [clientEmailBodyTemplate]
+  )
+
+  const clientEmailPreviewHtml = useMemo(
+    () =>
+      substituteEmailPreviewPlaceholders(mergedClientEmailBodyHtml, {
+        contact: previewContactName || '—',
+        quoteRef: (previewQuoteReference || '').trim() || '—',
+        description,
+        createdBy: (selectedEmployee?.name || '').trim(),
+      }),
+    [
+      mergedClientEmailBodyHtml,
+      previewContactName,
+      previewQuoteReference,
+      description,
+      selectedEmployee?.name,
+    ]
+  )
+
+  useEffect(() => {
+    emailPreviewDirtyRef.current = false
+  }, [clientEmailBodyTemplate])
+
+  useEffect(() => {
+    if (emailPreviewDirtyRef.current) return
+    writeEmailPreviewEditableIframe(
+      emailPreviewIframeRef.current,
+      clientEmailPreviewHtml,
+      emailPreviewDirtyRef
+    )
+  }, [clientEmailPreviewHtml, clientEmailBodyTemplate])
+
   useEffect(() => {
     if (isNewContact) return
     if (selectedContact) {
@@ -166,16 +420,28 @@ const QuoteForm = () => {
     }
   }, [selectedContact, isNewContact])
 
+  const transportCompanyAmount = useMemo(() => {
+    if (deliveryToClientBy !== 'company') return 0
+    return parseMoneyInput(companyTransportPrice)
+  }, [deliveryToClientBy, companyTransportPrice])
+
   const totals = useMemo(() => {
-    let sum = 0
+    let productsSum = 0
     for (const p of products) {
       const n = parseFloat(String(p.price).replace(',', '.'))
-      if (!Number.isNaN(n)) sum += n
+      if (!Number.isNaN(n)) productsSum += n
     }
-    const tax = Math.round(sum * 0.18 * 100) / 100
-    const total = Math.round((sum + tax) * 100) / 100
-    return { price: sum, tax_price: tax, total_with_tax: total }
-  }, [products])
+    const price = productsSum + transportCompanyAmount
+    const tax = Math.round(price * 0.18 * 100) / 100
+    const total = Math.round((price + tax) * 100) / 100
+    return {
+      productsSum,
+      transportCompanyAmount,
+      price,
+      tax_price: tax,
+      total_with_tax: total,
+    }
+  }, [products, transportCompanyAmount])
 
   const addProduct = () => setProducts((prev) => [...prev, emptyProduct()])
   const removeProduct = (index) => {
@@ -198,7 +464,9 @@ const QuoteForm = () => {
     setNewContactName('')
     setContacts([])
     setDescription('')
-    setTransportingAdditionals('')
+    setCompanyTransportLine('')
+    setCompanyTransportExtras('')
+    setCompanyTransportPrice('')
     setNotes('')
     setInternalNotes('')
     setProducts([emptyProduct()])
@@ -209,7 +477,8 @@ const QuoteForm = () => {
     setProjectDeadlineUnit('days')
     setDeliveryToClientBy('')
     setSendToClient(false)
-    setSendToClientEmailAdditions('')
+    setClientEmailBodyTemplate('formal')
+    emailPreviewDirtyRef.current = false
     setEmail('')
     setPhone('')
     setFormAlert(null)
@@ -249,6 +518,22 @@ const QuoteForm = () => {
           : Number(parseFloat(String(p.price).replace(',', '.'))) || 0,
     }))
 
+    const transportAmtSubmit =
+      deliveryToClientBy === 'company' ? parseMoneyInput(companyTransportPrice) : 0
+    const transporting_additionals = buildTransportingAdditionalsPayload(
+      deliveryToClientBy,
+      companyTransportLine,
+      companyTransportExtras,
+      transportAmtSubmit
+    )
+    const notesOut = notesWithClientSupplyLine(notes, deliveryToClientBy === 'client')
+
+    const iframeDoc = emailPreviewIframeRef.current?.contentDocument
+    const client_email_body_html =
+      emailPreviewDirtyRef.current && iframeDoc?.documentElement
+        ? iframeDoc.documentElement.outerHTML
+        : mergedClientEmailBodyHtml
+
     const payload = {
       description,
       created_by: [createdById],
@@ -267,8 +552,8 @@ const QuoteForm = () => {
             contact_name: selectedContact?.name || '',
           }),
       created_by_name: selectedEmployee?.name || '',
-      transporting_additionals: transportingAdditionals,
-      notes,
+      transporting_additionals,
+      notes: notesOut,
       internal_notes: internalNotes,
       products: productLines,
       price: totals.price,
@@ -285,7 +570,9 @@ const QuoteForm = () => {
       ),
       delivery_to_client_by: deliveryToClientBy,
       send_to_client: sendToClient,
-      send_to_client_email_additions: sendToClientEmailAdditions,
+      client_email_body_template: clientEmailBodyTemplate,
+      client_email_body_html,
+      send_to_client_email_additions: '',
       created_at,
       hour,
       email,
@@ -536,127 +823,89 @@ const QuoteForm = () => {
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">הובלה ותוספות</span>
-            <textarea
-              className="quote-doc-textarea"
-              rows={2}
-              value={transportingAdditionals}
-              onChange={(e) => setTransportingAdditionals(e.target.value)}
-            />
-          </div>
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">הערות</span>
-            <textarea
-              className="quote-doc-textarea"
-              rows={2}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
-          </div>
         </div>
 
-        <section className="quote-internal-section" aria-labelledby="quote-internal-heading">
-          <h2 id="quote-internal-heading" className="quote-section-title quote-section-title-internal">
-            שימוש פנימי בחברה
-          </h2>
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">הערות פנימיות</span>
-            <textarea
-              className="quote-doc-textarea"
-              rows={3}
-              value={internalNotes}
-              onChange={(e) => setInternalNotes(e.target.value)}
-            />
-          </div>
-        </section>
-
-        <section className="quote-products-section">
-          <h2 className="quote-section-title">תוצרים</h2>
-          <table className="quote-products-table">
-            <thead>
-              <tr>
-                <th>תיאור</th>
-                <th>מחיר</th>
-                <th aria-hidden="true" />
-              </tr>
-            </thead>
-            <tbody>
-              {products.map((row, index) => (
-                <tr key={index}>
-                  <td>
-                    <textarea
-                      className="quote-product-desc"
-                      rows={2}
-                      value={row.description}
-                      onChange={(e) =>
-                        updateProduct(index, 'description', e.target.value)
-                      }
-                    />
-                  </td>
-                  <td>
-                    <input
-                      className="quote-product-price"
-                      type="number"
-                      min="0"
-                      step="any"
-                      inputMode="decimal"
-                      value={row.price}
-                      onChange={(e) =>
-                        updateProduct(index, 'price', e.target.value)
-                      }
-                    />
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      className="quote-btn-remove"
-                      onClick={() => removeProduct(index)}
-                      disabled={products.length <= 1}
-                    >
-                      הסר
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button type="button" className="quote-btn-add" onClick={addProduct}>
-            + הוסף תוצר
-          </button>
-
-          <div className="quote-totals">
-            <div className="quote-total-row">
-              <span>סה״כ לפני מע״מ</span>
-              <strong>{totals.price.toLocaleString('he-IL')}</strong>
-            </div>
-            <div className="quote-total-row">
-              <span>מע״מ (18%)</span>
-              <strong>{totals.tax_price.toLocaleString('he-IL')}</strong>
-            </div>
-            <div className="quote-total-row quote-total-final">
-              <span>סה״כ כולל מע״מ</span>
-              <strong>{totals.total_with_tax.toLocaleString('he-IL')}</strong>
+        <div className="quote-doc-meta">
+          <div className="quote-doc-meta-row quote-delivery-row">
+            <span className="quote-doc-label">הובלה ללקוח</span>
+            <div className="quote-delivery-options" role="group" aria-label="הובלה ללקוח">
+              <label className="quote-radio-label">
+                <input
+                  type="radio"
+                  name="delivery_to_client"
+                  value="company"
+                  checked={deliveryToClientBy === 'company'}
+                  onChange={() => setDeliveryToClientBy('company')}
+                />
+                <span>ע״י החברה</span>
+              </label>
+              <label className="quote-radio-label">
+                <input
+                  type="radio"
+                  name="delivery_to_client"
+                  value="client"
+                  checked={deliveryToClientBy === 'client'}
+                  onChange={() => setDeliveryToClientBy('client')}
+                />
+                <span>ע״י הלקוח</span>
+              </label>
+              <button
+                type="button"
+                className="quote-delivery-clear"
+                onClick={() => setDeliveryToClientBy('')}
+              >
+                נקה בחירה
+              </button>
             </div>
           </div>
-        </section>
+          {deliveryToClientBy === 'company' ? (
+            <div
+              className="quote-company-transport-block"
+              role="region"
+              aria-label="הובלה ותוספות — ע״י החברה"
+            >
+              <p className="quote-company-transport-intro">
+                פירוט הובלה ותוספות (נכלל במחיר לפני מע״מ)
+              </p>
+              <div className="quote-doc-meta-row">
+                <span className="quote-doc-label">הובלה</span>
+                <textarea
+                  className="quote-doc-textarea"
+                  rows={2}
+                  value={companyTransportLine}
+                  onChange={(e) => setCompanyTransportLine(e.target.value)}
+                  placeholder="תיאור / פירוט הובלה"
+                />
+              </div>
+              <div className="quote-doc-meta-row">
+                <span className="quote-doc-label">תוספות</span>
+                <textarea
+                  className="quote-doc-textarea"
+                  rows={2}
+                  value={companyTransportExtras}
+                  onChange={(e) => setCompanyTransportExtras(e.target.value)}
+                />
+              </div>
+              <div className="quote-doc-meta-row">
+                <span className="quote-doc-label">מחיר (לפני מע״מ)</span>
+                <input
+                  className="quote-doc-input-inline quote-company-transport-price"
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputMode="decimal"
+                  value={companyTransportPrice}
+                  onChange={(e) => setCompanyTransportPrice(e.target.value)}
+                  dir="ltr"
+                  placeholder="0"
+                  aria-label="מחיר הובלה לפני מע״מ"
+                />
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         <div className="quote-doc-meta">
-          <div className="quote-doc-meta-row">
-            <span className="quote-doc-label">תנאי תשלום</span>
-            <div className="quote-doc-field-stack">
-              <textarea
-                className="quote-doc-textarea"
-                rows={2}
-                value={paymentConditions}
-                onChange={(e) => setPaymentConditions(e.target.value)}
-                autoComplete="off"
-              />
-              <p className="quote-field-note">
-                תיאור תנאים בטקסט בלבד — אין כאן שדה תאריך לתשלום.
-              </p>
-            </div>
-          </div>
           <div className="quote-doc-meta-row quote-deadline-offset-row">
             <span className="quote-doc-label">סקיצה — תוך</span>
             <div className="quote-deadline-offset">
@@ -713,36 +962,144 @@ const QuoteForm = () => {
               נשמר כטקסט ב-Airtable (למשל «3 חודשים»). התאריך הסופי יחושב במערכת.
             </p>
           </div>
-          <div className="quote-doc-meta-row quote-delivery-row">
-            <span className="quote-doc-label">הובלה ללקוח</span>
-            <div className="quote-delivery-options" role="group" aria-label="הובלה ללקוח">
-              <label className="quote-radio-label">
-                <input
-                  type="radio"
-                  name="delivery_to_client"
-                  value="company"
-                  checked={deliveryToClientBy === 'company'}
-                  onChange={() => setDeliveryToClientBy('company')}
-                />
-                <span>ע״י החברה</span>
-              </label>
-              <label className="quote-radio-label">
-                <input
-                  type="radio"
-                  name="delivery_to_client"
-                  value="client"
-                  checked={deliveryToClientBy === 'client'}
-                  onChange={() => setDeliveryToClientBy('client')}
-                />
-                <span>ע״י הלקוח</span>
-              </label>
-              <button
-                type="button"
-                className="quote-delivery-clear"
-                onClick={() => setDeliveryToClientBy('')}
-              >
-                נקה בחירה
-              </button>
+        </div>
+
+        <section className="quote-products-section">
+          <h2 className="quote-section-title">תוצרים</h2>
+          <table className="quote-products-table">
+            <thead>
+              <tr>
+                <th>תיאור</th>
+                <th>מחיר</th>
+                <th aria-hidden="true" />
+              </tr>
+            </thead>
+            <tbody>
+              {products.map((row, index) => (
+                <tr key={index}>
+                  <td>
+                    <textarea
+                      className="quote-product-desc"
+                      rows={2}
+                      value={row.description}
+                      onChange={(e) =>
+                        updateProduct(index, 'description', e.target.value)
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="quote-product-price"
+                      type="number"
+                      min="0"
+                      step="any"
+                      inputMode="decimal"
+                      value={row.price}
+                      onChange={(e) =>
+                        updateProduct(index, 'price', e.target.value)
+                      }
+                    />
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="quote-btn-remove"
+                      onClick={() => removeProduct(index)}
+                      disabled={products.length <= 1}
+                    >
+                      הסר
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button type="button" className="quote-btn-add" onClick={addProduct}>
+            + הוסף תוצר
+          </button>
+        </section>
+
+        <section
+          className="quote-products-section quote-price-calc-section"
+          aria-labelledby="quote-price-calc-heading"
+        >
+          <h2 id="quote-price-calc-heading" className="quote-section-title">
+            חישוב מחיר
+          </h2>
+          <div className="quote-totals">
+            {transportCompanyAmount > 0 ? (
+              <>
+                <div className="quote-total-row quote-total-sub">
+                  <span>סה״כ תוצרים</span>
+                  <strong>{totals.productsSum.toLocaleString('he-IL')}</strong>
+                </div>
+                <div className="quote-total-row quote-total-sub">
+                  <span>הובלה (ע״י החברה)</span>
+                  <strong>{transportCompanyAmount.toLocaleString('he-IL')}</strong>
+                </div>
+              </>
+            ) : null}
+            <div className="quote-total-row">
+              <span>סה״כ לפני מע״מ</span>
+              <strong>{totals.price.toLocaleString('he-IL')}</strong>
+            </div>
+            <div className="quote-total-row">
+              <span>מע״מ (18%)</span>
+              <strong>{totals.tax_price.toLocaleString('he-IL')}</strong>
+            </div>
+            <div className="quote-total-row quote-total-final">
+              <span>סה״כ כולל מע״מ</span>
+              <strong>{totals.total_with_tax.toLocaleString('he-IL')}</strong>
+            </div>
+          </div>
+        </section>
+
+        <div className="quote-doc-meta">
+          <div className="quote-doc-meta-row">
+            <span className="quote-doc-label">הערות</span>
+            <textarea
+              className="quote-doc-textarea"
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+            {deliveryToClientBy === 'client' ? (
+              <p className="quote-field-note">
+                בשמירה יתווסף אוטומטית: «{CLIENT_SUPPLY_NOTE}»
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <section className="quote-internal-section" aria-labelledby="quote-internal-heading">
+          <h2 id="quote-internal-heading" className="quote-section-title quote-section-title-internal">
+            שימוש פנימי בחברה
+          </h2>
+          <div className="quote-doc-meta-row">
+            <span className="quote-doc-label">הערות פנימיות</span>
+            <textarea
+              className="quote-doc-textarea"
+              rows={3}
+              value={internalNotes}
+              onChange={(e) => setInternalNotes(e.target.value)}
+            />
+          </div>
+        </section>
+
+        <div className="quote-doc-meta">
+          <div className="quote-doc-meta-row">
+            <span className="quote-doc-label">תנאי תשלום</span>
+            <div className="quote-doc-field-stack">
+              <textarea
+                className="quote-doc-textarea"
+                rows={2}
+                value={paymentConditions}
+                onChange={(e) => setPaymentConditions(e.target.value)}
+                autoComplete="off"
+              />
+              <p className="quote-field-note">
+                תיאור תנאים בטקסט בלבד — אין כאן שדה תאריך לתשלום.
+              </p>
             </div>
           </div>
         </div>
@@ -755,7 +1112,8 @@ const QuoteForm = () => {
             פעולות לאחר יצירת מסמך
           </h2>
           <p className="quote-post-actions-intro">
-            סמן אם לשלוח את ההצעה ללקוח לאחר השמירה, והוסף טקסט שיופיע בגוף המייל (אופציונלי).
+            סמן אם לשלוח את ההצעה ללקוח לאחר השמירה. ניתן לבחור סוג תבנית לגוף המייל ולהוסיף טקסט
+            משלים (אופציונלי).
           </p>
           <div className="quote-doc-meta">
             <div className="quote-doc-meta-row quote-checkbox-row">
@@ -768,15 +1126,72 @@ const QuoteForm = () => {
                 <span className="quote-doc-label inline">שליחה ללקוח</span>
               </label>
             </div>
-            <div className="quote-doc-meta-row">
-              <span className="quote-doc-label">תוספות לגוף המייל</span>
-              <textarea
-                className="quote-doc-textarea"
-                rows={4}
-                value={sendToClientEmailAdditions}
-                onChange={(e) => setSendToClientEmailAdditions(e.target.value)}
-                placeholder="טקסט שיישלח בגוף המייל ללקוח כשהאפשרות שלמעלה מסומנת"
-              />
+            <div className="quote-doc-meta-row quote-delivery-row">
+              <span className="quote-doc-label">תבנית גוף המייל</span>
+              <div
+                className="quote-delivery-options"
+                role="radiogroup"
+                aria-label="תבנית גוף המייל"
+              >
+                <label className="quote-radio-label">
+                  <input
+                    type="radio"
+                    name="client_email_body_template"
+                    value="formal"
+                    checked={clientEmailBodyTemplate === 'formal'}
+                    onChange={() => setClientEmailBodyTemplate('formal')}
+                  />
+                  <span>רשמי</span>
+                </label>
+                <label className="quote-radio-label">
+                  <input
+                    type="radio"
+                    name="client_email_body_template"
+                    value="short"
+                    checked={clientEmailBodyTemplate === 'short'}
+                    onChange={() => setClientEmailBodyTemplate('short')}
+                  />
+                  <span>קצר</span>
+                </label>
+                <label className="quote-radio-label">
+                  <input
+                    type="radio"
+                    name="client_email_body_template"
+                    value="custom"
+                    checked={clientEmailBodyTemplate === 'custom'}
+                    onChange={() => setClientEmailBodyTemplate('custom')}
+                  />
+                  <span>התאמה אישית</span>
+                </label>
+              </div>
+            </div>
+            <p className="quote-email-preview-note">
+              הטקסט ניתן לעריכה.{' '}
+              <button
+                type="button"
+                className="quote-email-resync-btn"
+                onClick={() => {
+                  emailPreviewDirtyRef.current = false
+                  writeEmailPreviewEditableIframe(
+                    emailPreviewIframeRef.current,
+                    clientEmailPreviewHtml,
+                    emailPreviewDirtyRef
+                  )
+                }}
+              >
+                סנכרון מחדש מהטופס
+              </button>
+            </p>
+            <div className="quote-doc-meta-row quote-email-rendered-row">
+              <span className="quote-doc-label">תצוגת מייל</span>
+              <div className="quote-email-client-preview-wrap">
+                <iframe
+                  ref={emailPreviewIframeRef}
+                  title="תצוגת מייל ללקוח"
+                  className="quote-email-client-preview-frame"
+                  sandbox="allow-same-origin"
+                />
+              </div>
             </div>
           </div>
         </section>

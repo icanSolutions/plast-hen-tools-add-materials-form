@@ -55,7 +55,12 @@ export async function getOrderById(orderId) {
   try {
     const res = await axios.get(url, { headers: headers() })
     const f = res.data.fields || {}
-    const ref = f[ORDER_REFERENCE_FIELD] ?? f['reference'] ?? ''
+    const ref =
+      f[ORDER_REFERENCE_FIELD] ??
+      f.reference ??
+      f.Reference ??
+      f['מספר הזמנה'] ??
+      ''
     return String(ref).trim()
   } catch (err) {
     if (err.response?.status === 404) {

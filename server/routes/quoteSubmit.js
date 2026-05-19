@@ -4,6 +4,7 @@ import {
   createQuoteRecord,
   mapPayloadToQuoteFields,
   computeNextQuoteReference,
+  getQuoteReferenceDiagnostics,
   resolveQuoteReferenceAfterCreate,
   toRecordIds,
   formatProductsParagraphForDoc,
@@ -16,7 +17,11 @@ const router = express.Router()
 router.get('/next-reference', async (req, res, next) => {
   try {
     const quote_reference = await computeNextQuoteReference()
-    res.json({ quote_reference })
+    const payload = { quote_reference }
+    if (req.query.debug === '1' && process.env.NODE_ENV !== 'production') {
+      payload.diagnostics = await getQuoteReferenceDiagnostics()
+    }
+    res.json(payload)
   } catch (err) {
     next(err)
   }
@@ -90,6 +95,14 @@ function normalizePayload(body) {
 
   const products_paragraph = formatProductsParagraphForDoc(products)
 
+  const client_email_body_template =
+    body.client_email_body_template === 'short' ||
+    body.client_email_body_template === 'custom'
+      ? body.client_email_body_template
+      : 'formal'
+  const client_email_body_html =
+    body.client_email_body_html != null ? String(body.client_email_body_html) : ''
+
   const nc = body.new_contact
   const new_contact =
     nc && typeof nc === 'object' && String(nc.name || '').trim() !== ''
@@ -123,6 +136,8 @@ function normalizePayload(body) {
     delivery_to_client_by,
     delivery_to_client_label,
     send_to_client: Boolean(body.send_to_client),
+    client_email_body_template,
+    client_email_body_html,
     send_to_client_email_additions: body.send_to_client_email_additions ?? '',
     created_at,
     hour,
@@ -187,6 +202,7 @@ router.post('/submit', async (req, res, next) => {
     const outbound = {
       quote_record_id: recordId,
       quote_reference,
+      quote_ref: quote_reference,
       ...normalizedForOutbound,
       products_json: JSON.stringify(normalized.products),
       customer: displayNameOrRecordId(normalized.customer_name, normalized.customer),

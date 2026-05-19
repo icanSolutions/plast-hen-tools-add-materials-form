@@ -48,14 +48,24 @@ VITE_AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
 VITE_AIRTABLE_TABLE_ID=tblXXXXXXXXXXXXXX
 VITE_AIRTABLE_API_KEY=keyXXXXXXXXXXXXXX
 
-# Lookup Tables - use Table IDs (tblXXXXXXXXXXXXXX)
+# Lookup table — production projects (for project dropdown)
 VITE_PRODUCTION_PROJECTS_TABLE_ID=tblXXXXXXXXXXXXXX
-VITE_MATERIALS_TABLE_ID=tblXXXXXXXXXXXXXX
-
-# Field names in lookup tables (the field that contains values to display)
 VITE_PRODUCTION_PROJECTS_FIELD=Name
+# Optional: client name in project dropdown label (default: לקוח)
+# VITE_PRODUCTION_PROJECTS_CLIENT_FIELD=לקוח
+
+# Materials-for-project destination table (VITE_AIRTABLE_TABLE_ID above)
+# Optional: override Airtable field names if yours differ
+# VITE_PROJECT_MATERIALS_FIELD_PROJECT=תיק ייצור
+# VITE_PROJECT_MATERIALS_FIELD_NAME=שם חומר
+# VITE_PROJECT_MATERIALS_FIELD_SIZE=מידה
+# VITE_PROJECT_MATERIALS_FIELD_QUANTITY=כמות
+# VITE_PROJECT_MATERIALS_FIELD_IN_STOCK=במלאי
+# VITE_PROJECT_MATERIALS_FIELD_NOTES=הערות
+
+# Supplier orders only — raw materials catalog (not used by materials-for-project form)
+VITE_MATERIALS_TABLE_ID=tblXXXXXXXXXXXXXX
 VITE_MATERIALS_FIELD=Name
-# Optional: field to show in materials dropdown/list (default: שם מוצר)
 # VITE_MATERIALS_DISPLAY_FIELD=שם מוצר
 
 # Suppliers and supplier orders
@@ -64,7 +74,7 @@ VITE_SUPPLIER_ORDERS_TABLE_ID=tblXXXXXXXXXXXXXX
 VITE_SUPPLIER_ORDER_LINES_TABLE_ID=tblXXXXXXXXXXXXXX
 VITE_SUPPLIERS_FIELD=Name
 
-# Optional: PDF backend base URL (for "צור ושמור PDF" and "צור ושלח לספק")
+# Optional: PDF backend base URL (for "צור ושמור ב-Airtable" and "צור ושלח לספק")
 # When set, the app will call POST .../api/supplier-order/pdf and .../api/supplier-order/send
 # VITE_PDF_API_BASE_URL=https://your-backend.example.com
 
@@ -79,15 +89,18 @@ VITE_SUPPLIERS_FIELD=Name
 
 ### 3. Configure Your Airtable Tables
 
-**Main Table** (where records will be created):
-- Must have fields: `פרויקט ייצור`, `חומר`, `כמות`
-- Update field names in `src/services/airtable.js` if your fields have different names
+**Materials for project table** (`VITE_AIRTABLE_TABLE_ID` — where form rows are created):
+- **תיק ייצור** — linked record to production projects
+- **שם חומר** — single line text
+- **מידה** — single line text (optional in the form)
+- **כמות** — number
+- **במלאי** — single select: `במלאי`, `לא במלאי`, `הוזמן בטלפון`
+- **הערות** — long text (optional in the form)
 
-**Lookup Tables** (for dropdown options):
-- **Production Projects Table**: Contains the list of production projects
-- **Materials Table**: Contains the list of materials
-- Both tables should have a field (default: `Name`) that contains the values to display in dropdowns
-- Update `VITE_PRODUCTION_PROJECTS_FIELD` and `VITE_MATERIALS_FIELD` in `.env` if your field names differ
+Override field names with `VITE_PROJECT_MATERIALS_FIELD_*` in `.env` if needed.
+
+**Production projects table** (dropdown only):
+- Linked from the form; display uses `VITE_PRODUCTION_PROJECTS_FIELD` and optional client field.
 
 ### 4. Run the Development Server
 
@@ -130,17 +143,18 @@ VITE_CUSTOMER_CONTACTS_LINK_FIELD=אנשי קשר
 
 ## Usage
 
-### Multi-record form (חומרי גלם לתיק ייצור) — root URL `/`
+### Multi-record form (חומרים לפרויקט) — root URL `/`
 
-1. The form loads dropdown options from your Airtable tables automatically
-2. Fill in the form fields for the first record:
-   - Select a production project from the dropdown
-   - Select a material from the dropdown
-   - Enter a quantity (number)
-3. Click the "+ הוסף רשומה נוספת" button to add more records
-4. Fill in all the records you want to create
-5. Click "צור X רשומה/ות" to submit all records to Airtable
-6. Records will be created in batches (up to 10 at a time)
+1. The form loads production projects from Airtable
+2. For each row, fill:
+   - **פרויקט ייצור** (required)
+   - **שם חומר** (required)
+   - **מידה** (optional)
+   - **כמות** (required)
+   - **במלאי** — במלאי / לא במלאי / הוזמן בטלפון (required)
+   - **הערות** (optional)
+3. Click **"+ הוסף רשומה נוספת"** to add more rows (new rows copy the first row’s project)
+4. Click **"צור X רשומה/ות"** to create records in Airtable (batches of up to 10)
 
 ### Supplier order form (הזמנה חדשה מספק) — URL `/supplier-order`
 
@@ -152,32 +166,39 @@ The page looks like a single **order document**: title "הזמנת ספק", reci
 4. Use **"הוסף שורה"** to add more lines.
 5. Fill **הערות** and check the **חומרי גלם (סיכום)** summary.
 6. Choose an action:
-   - **"צור ושמור PDF"** — creates the order in Airtable and, when the PDF backend is configured, generates a PDF and triggers a **browser download**.
+   - **"צור ושמור ב-Airtable"** — creates the order in Airtable and, when the backend is configured, generates the order document, uploads to Drive, and saves the link in **טופס הזמנה** (no download).
    - **"צור ושלח לספק"** — creates the order and, when the backend is configured, uploads the PDF and sends it to the supplier by email.
 
 Without a PDF backend, both buttons only create the order in Airtable (one record in **הזמנות מספקים** and one per line in **שורות הזמנת ספק**).
+
+### Supplier quote request (בקשת הצעת מחיר) — URL `/supplier-quote-request`
+
+1. Choose **תיק ייצור**, then select **חומרים** from that project’s rows in **חומרי גלם לתיק ייצור**.
+2. Select one or more **ספקים**; edit **מייל** / **טלפון** per supplier if needed (for your use; not emailed automatically unless you add that later).
+3. Submit — for **each supplier** the backend copies the Google Doc template `supplier_quote_demand` (same placeholders/table as orders: `{{supplierName}}`, `{{date}}`, `{{LINE_ROW}}`, optional `{{notes}}`), exports PDF, and creates a row in **בקשת הצעת מחיר מספק** with **חומרי גלם**, **תיק ייצור**, **טופס הזמנה** (PDF URL), and **ספק**.
+
+Server env: `AIRTABLE_SUPPLIER_QUOTE_REQUESTS_TABLE_ID`, `GOOGLE_DOCS_QUOTE_DEMAND_TEMPLATE_ID` (see `server/.env.example`). Frontend: `VITE_SUPPLIERS_PHONE_FIELD` if your phone column is not `טלפון`.
 
 ## Customization
 
 ### Changing Field Names
 
-Edit `src/services/airtable.js` and update the field mapping in the `createRecords` function:
+Override Airtable field names in `.env` (see `mapProjectMaterialToAirtable` in `src/services/airtable.js`):
 
-```javascript
-fields: {
-  'פרויקט ייצור': record.productionProject,
-  'חומר': record.material,
-  'כמות': record.quantity ? Number(record.quantity) : 0,
-}
+```env
+VITE_PROJECT_MATERIALS_FIELD_PROJECT=תיק ייצור
+VITE_PROJECT_MATERIALS_FIELD_NAME=שם חומר
+VITE_PROJECT_MATERIALS_FIELD_SIZE=מידה
+VITE_PROJECT_MATERIALS_FIELD_QUANTITY=כמות
+VITE_PROJECT_MATERIALS_FIELD_IN_STOCK=במלאי
+VITE_PROJECT_MATERIALS_FIELD_NOTES=הערות
 ```
 
-### Changing Lookup Table Field Names
-
-If your lookup tables use different field names (not "Name"), update the `.env` file:
+### Production project dropdown labels
 
 ```env
 VITE_PRODUCTION_PROJECTS_FIELD=YourFieldName
-VITE_MATERIALS_FIELD=YourFieldName
+VITE_PRODUCTION_PROJECTS_CLIENT_FIELD=לקוח
 ```
 
 ### Adding/Removing Fields
@@ -205,8 +226,9 @@ The built files will be in the `dist` directory.
 
 The **server** folder is a separate Node.js API used for:
 
-- **POST /api/supplier-order/pdf** — Generate a supplier order PDF (PDFKit) and return it for download.
-- **POST /api/supplier-order/send** — Generate the PDF, upload it to Google Drive, update the Airtable order record with the PDF link (טופס הזמנה), and email the supplier.
+- **POST /api/supplier-order/submit** — Full workflow for automations: create order + lines in Airtable, generate PDF, patch **טופס הזמנה**, email supplier (`action`: `"send"` default, or `"save"` for PDF only). See `server/README.md`.
+- **POST /api/supplier-order/pdf** — Generate the order PDF from a Google Docs template, upload to Drive, patch **טופס הזמנה**, return `{ ok, pdfUrl }` (existing `orderId` required).
+- **POST /api/supplier-order/send** — Same as pdf for an existing order, then email the supplier.
 
 To use it:
 

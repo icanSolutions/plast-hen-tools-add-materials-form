@@ -1,9 +1,9 @@
 import { google } from 'googleapis'
 import { getGoogleAuth } from './drive.js'
 
-const PLACEHOLDER_ORDER_LINES = '{{ORDER_LINES}}'
+/** Marker in the template table data row (row below headers), typically column 0. */
+const PLACEHOLDER_LINE_ROW = '{{LINE_ROW}}'
 const TABLE_COLS = 4
-const TABLE_HEADERS = ['חומר גלם / תיאור', 'מידות', 'כמות', 'הערות']
 
 let docsClient = null
 
@@ -14,19 +14,47 @@ async function getDocs() {
   return docsClient
 }
 
+function cellContainsText(cell, searchText) {
+  for (const block of cell.content || []) {
+    for (const pe of block.paragraph?.elements || []) {
+      if (pe.textRun?.content?.includes(searchText)) return true
+    }
+  }
+  return false
+}
+
+/** First paragraph startIndex inside a table cell (for insertText). */
+function cellInsertIndex(cell) {
+  for (const block of cell.content || []) {
+    const elements = block.paragraph?.elements
+    if (elements?.length && elements[0].startIndex != null) {
+      return elements[0].startIndex
+    }
+  }
+  return null
+}
+
+/** StructuralElement.startIndex for a table (required by insertTableRow). */
+function resolveTableStartIndex(tableEl) {
+  return tableEl?.startIndex ?? null
+}
+
 /**
- * Find the start index of a text placeholder in the document body.
- * @param {Object} doc - Document from documents.get
- * @param {string} text - Placeholder text to find (e.g. {{ORDER_LINES}})
- * @returns {number|null} - startIndex or null
+ * Find a table cell containing placeholder text (searches inside tables, not body paragraphs).
+ * @returns {{ tableStartIndex: number, rowIndex: number, columnIndex: number, contentIndex: number } | null}
  */
-function findTextIndex(doc, text) {
+function findTableCellWithText(doc, searchText) {
   const content = doc.body?.content || []
-  for (const el of content) {
-    if (el.paragraph?.elements) {
-      for (const pe of el.paragraph.elements) {
-        if (pe.textRun?.content?.includes(text)) {
-          return pe.startIndex
+  for (let contentIndex = 0; contentIndex < content.length; contentIndex++) {
+    const el = content[contentIndex]
+    if (!el.table?.tableRows) continue
+    const tableStartIndex = resolveTableStartIndex(el)
+    if (tableStartIndex == null) continue
+    for (let rowIndex = 0; rowIndex < el.table.tableRows.length; rowIndex++) {
+      const cells = el.table.tableRows[rowIndex].tableCells || []
+      for (let columnIndex = 0; columnIndex < cells.length; columnIndex++) {
+        if (cellContainsText(cells[columnIndex], searchText)) {
+          return { tableStartIndex, rowIndex, columnIndex, contentIndex }
         }
       }
     }
@@ -34,29 +62,61 @@ function findTextIndex(doc, text) {
   return null
 }
 
-/**
- * Fill the document with order data: replace placeholders and insert order lines table.
- * @param {string} documentId - Google Doc ID (Drive file ID)
- * @param {Object} data - { supplierName, date, notes, order_reference, lines }
- * @param {Array} data.lines - [{ materialName, freeDescription, dimensions, quantity, lineNotes }]
- */
-export async function fillOrderDoc(documentId, data) {
-  const docs = await getDocs()
-  const {
-    supplierName = '',
-    date = '',
-    notes = '',
-    order_reference = '',
-    lines = [],
-  } = data
+function findTableElementAtContentIndex(doc, contentIndex) {
+  const el = doc.body?.content?.[contentIndex]
+  return el?.table ? el : null
+}
 
-  const doc = await docs.documents.get({ documentId })
-  const orderLinesIndex = findTextIndex(doc.data, PLACEHOLDER_ORDER_LINES)
-  if (orderLinesIndex == null) {
-    throw new Error(`Template placeholder ${PLACEHOLDER_ORDER_LINES} not found in document`)
+function lineCellText(line, colIdx) {
+  const name = [line.materialName, line.freeDescription].filter(Boolean).join(' / ').trim()
+  switch (colIdx) {
+    case 0:
+      return name || '—'
+    case 1:
+      return (line.dimensions && String(line.dimensions).trim()) || '—'
+    case 2:
+      return line.quantity != null && line.quantity !== '' ? String(line.quantity) : '—'
+    case 3:
+      return (line.lineNotes && String(line.lineNotes).trim()) || '—'
+    default:
+      return ''
+  }
+}
+
+function buildInsertTextRequests(tableEl, templateRowIndex, lines) {
+  const requests = []
+  const tableRows = tableEl.table?.tableRows || []
+  const numCols = Math.min(
+    TABLE_COLS,
+    tableEl.table?.columns ?? tableRows[0]?.tableCells?.length ?? TABLE_COLS
+  )
+
+  for (let i = 0; i < lines.length; i++) {
+    const rowIndex = templateRowIndex + i
+    if (rowIndex >= tableRows.length) break
+    const line = lines[i] || {}
+    const cells = tableRows[rowIndex].tableCells || []
+    for (let colIdx = 0; colIdx < numCols && colIdx < cells.length; colIdx++) {
+      const insertIndex = cellInsertIndex(cells[colIdx])
+      if (insertIndex == null) continue
+      requests.push({
+        insertText: {
+          location: { index: insertIndex, segmentId: '' },
+          text: lineCellText(line, colIdx),
+        },
+      })
+    }
   }
 
-  const rows = lines.length + 1
+  // Apply highest indices first so earlier insertions do not shift later ones.
+  return requests.sort(
+    (a, b) => b.insertText.location.index - a.insertText.location.index
+  )
+}
+
+function replaceAllTextRequests(data) {
+  const { supplierName, date, notes, order_reference } = data
+  const refText = String(order_reference ?? '')
   const requests = [
     {
       replaceAllText: {
@@ -76,85 +136,118 @@ export async function fillOrderDoc(documentId, data) {
         replaceText: String(notes),
       },
     },
-    {
-      replaceAllText: {
-        containsText: { text: '{{order_reference}}', matchCase: true },
-        replaceText: String(order_reference),
-      },
-    },
-    {
-      replaceAllText: {
-        containsText: { text: PLACEHOLDER_ORDER_LINES, matchCase: true },
-        replaceText: '',
-      },
-    },
-    {
-      insertTable: {
-        rows,
-        columns: TABLE_COLS,
-        location: { index: orderLinesIndex, segmentId: '' },
-      },
-    },
   ]
+  for (const placeholder of ['{{order_ref}}', '{{order_reference}}']) {
+    requests.push({
+      replaceAllText: {
+        containsText: { text: placeholder, matchCase: true },
+        replaceText: refText,
+      },
+    })
+  }
+  return requests
+}
+
+/**
+ * Fill the document: replace header placeholders, duplicate template row per line, fill cells.
+ * Template must include a table with a header row and a data row containing {{LINE_ROW}}.
+ *
+ * @param {string} documentId - Google Doc ID (Drive file ID)
+ * @param {Object} data - { supplierName, date, notes, order_reference, lines }
+ * @param {Array} data.lines - [{ materialName, dimensions, quantity, lineNotes }]
+ */
+function buildInsertTableRowRequests(tableStartIndex, templateRowIndex, columnIndex, count) {
+  const requests = []
+  for (let i = 0; i < count; i++) {
+    requests.push({
+      insertTableRow: {
+        tableCellLocation: {
+          tableStartLocation: { index: tableStartIndex, segmentId: '' },
+          rowIndex: templateRowIndex,
+          columnIndex,
+        },
+        insertBelow: true,
+      },
+    })
+  }
+  return requests
+}
+
+export async function fillOrderDoc(documentId, data) {
+  const docs = await getDocs()
+  const lines = data.lines || []
+
+  let docRes = await docs.documents.get({ documentId })
+  let templateCell = findTableCellWithText(docRes.data, PLACEHOLDER_LINE_ROW)
+  if (!templateCell) {
+    throw new Error(
+      `Template placeholder ${PLACEHOLDER_LINE_ROW} not found in a table cell. ` +
+        'Add a table with a header row and a data row containing {{LINE_ROW}} (e.g. first column).'
+    )
+  }
 
   await docs.documents.batchUpdate({
     documentId,
-    requestBody: { requests },
+    requestBody: { requests: replaceAllTextRequests(data) },
   })
 
-  const docAfter = await docs.documents.get({ documentId })
-  const content = docAfter.data.body?.content || []
-  const tableEl = content.find((el) => el.table != null)
-  if (!tableEl?.table?.tableRows) return
-
-  const insertTextRequests = []
-  const tableRows = tableEl.table.tableRows
-  for (let rowIdx = 0; rowIdx < tableRows.length; rowIdx++) {
-    const row = tableRows[rowIdx]
-    const cells = row.tableCells || []
-    for (let colIdx = 0; colIdx < cells.length && colIdx < TABLE_COLS; colIdx++) {
-      const cell = cells[colIdx]
-      const cellContent = cell.content || []
-      let insertIndex = null
-      for (const c of cellContent) {
-        const para = c.paragraph
-        if (para?.elements?.length) {
-          insertIndex = para.elements[0].startIndex
-          break
-        }
-      }
-      if (insertIndex == null) continue
-      let text
-      if (rowIdx === 0) {
-        text = TABLE_HEADERS[colIdx] ?? ''
-      } else {
-        const line = lines[rowIdx - 1] || {}
-        const desc = [line.materialName, line.freeDescription].filter(Boolean).join(' / ') || '—'
-        switch (colIdx) {
-          case 0:
-            text = desc
-            break
-          case 1:
-            text = line.dimensions || '—'
-            break
-          case 2:
-            text = line.quantity != null && line.quantity !== '' ? String(line.quantity) : '—'
-            break
-          case 3:
-            text = line.lineNotes || '—'
-            break
-          default:
-            text = ''
-        }
-      }
-      insertTextRequests.push({
-        insertText: {
-          location: { index: insertIndex, segmentId: '' },
-          text: String(text),
-        },
-      })
-    }
+  // replaceAllText shifts indices — re-resolve table location before insertTableRow.
+  docRes = await docs.documents.get({ documentId })
+  templateCell = findTableCellWithText(docRes.data, PLACEHOLDER_LINE_ROW)
+  if (!templateCell) {
+    throw new Error(
+      `${PLACEHOLDER_LINE_ROW} not found after replacing header placeholders. ` +
+        'Keep {{LINE_ROW}} in the template data row (below headers).'
+    )
   }
+
+  const {
+    tableStartIndex,
+    rowIndex: templateRowIndex,
+    columnIndex,
+    contentIndex,
+  } = templateCell
+
+  const extraRows = Math.max(0, lines.length - 1)
+  if (extraRows > 0) {
+    await docs.documents.batchUpdate({
+      documentId,
+      requestBody: {
+        requests: buildInsertTableRowRequests(
+          tableStartIndex,
+          templateRowIndex,
+          columnIndex,
+          extraRows
+        ),
+      },
+    })
+  }
+
+  await docs.documents.batchUpdate({
+    documentId,
+    requestBody: {
+      requests: [
+        {
+          replaceAllText: {
+            containsText: { text: PLACEHOLDER_LINE_ROW, matchCase: true },
+            replaceText: '',
+          },
+        },
+      ],
+    },
+  })
+
+  if (lines.length === 0) return
+
+  docRes = await docs.documents.get({ documentId })
+  const tableEl = findTableElementAtContentIndex(docRes.data, contentIndex)
+  if (!tableEl?.table) return
+
+  const insertTextRequests = buildInsertTextRequests(
+    tableEl,
+    templateRowIndex,
+    lines
+  )
 
   if (insertTextRequests.length) {
     await docs.documents.batchUpdate({

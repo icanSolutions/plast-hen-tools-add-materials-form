@@ -37,6 +37,38 @@
   object-fit: contain;
 }
 
+.app-main-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.app-main-nav-link {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fff;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.app-main-nav-link:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.app-main-nav-link.active {
+  background: #fff;
+  color: var(--color-primary);
+  border-color: #fff;
+}
+
 .container {
   background: #ffffff;
   border-radius: 16px;

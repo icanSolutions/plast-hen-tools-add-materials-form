@@ -11,7 +11,7 @@ const MATERIALS_TABLE_ID = import.meta.env.VITE_MATERIALS_TABLE_ID || ''
 const SUPPLIERS_TABLE_ID = import.meta.env.VITE_SUPPLIERS_TABLE_ID || ''
 
 // Tables where form submissions are WRITTEN. Use table IDs or names.
-// Existing multi-material form destination table (תיק ייצור, חומר גלם, כמות)
+// Materials-for-project table (תיק ייצור, שם חומר, מידה, כמות, במלאי, הערות)
 const DESTINATION_TABLE_ID = import.meta.env.VITE_AIRTABLE_TABLE_ID || ''
 const DESTINATION_TABLE_NAME = import.meta.env.VITE_AIRTABLE_TABLE_NAME || 'Table1'
 const AIRTABLE_API_URL = DESTINATION_TABLE_ID
@@ -226,7 +226,325 @@ export const fetchSuppliers = async () => {
 }
 
 /**
- * Creates multiple records in Airtable
+ * Fetches suppliers with editable contact fields (מייל, טלפון).
+ * @returns {Promise<Array<{ id, name, email, phone }>>}
+ */
+export const fetchSuppliersWithContact = async () => {
+  if (!SUPPLIERS_TABLE_ID) {
+    throw new Error('אנא הגדר VITE_SUPPLIERS_TABLE_ID בקובץ .env')
+  }
+  const nameField = import.meta.env.VITE_SUPPLIERS_FIELD || 'שם'
+  const emailField = import.meta.env.VITE_SUPPLIERS_EMAIL_FIELD || 'מייל'
+  const phoneField = import.meta.env.VITE_SUPPLIERS_PHONE_FIELD || 'טלפון'
+  const url = `${AIRTABLE_BASE_URL}/${SUPPLIERS_TABLE_ID}`
+  const rows = []
+  let offset = null
+
+  const fieldVal = (fields, key) => {
+    let v = fields[key]
+    if (v == null) return ''
+    if (Array.isArray(v)) {
+      const coalesced = coalesceCharSplitStringArray(v)
+      v = Array.isArray(coalesced) ? coalesced.join('') : coalesced
+    }
+    return String(v).trim()
+  }
+
+  do {
+    const params = { maxRecords: 100 }
+    if (offset) params.offset = offset
+    const response = await axios.get(url, {
+      params,
+      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` },
+    })
+    for (const record of response.data.records || []) {
+      const f = record.fields || {}
+      const name =
+        fieldVal(f, nameField) ||
+        fieldVal(f, 'שם') ||
+        fieldVal(f, 'Name') ||
+        ''
+      if (!name) continue
+      rows.push({
+        id: record.id,
+        name,
+        email:
+          fieldVal(f, emailField) ||
+          fieldVal(f, 'מייל') ||
+          fieldVal(f, 'Email') ||
+          '',
+        phone:
+          fieldVal(f, phoneField) ||
+          fieldVal(f, 'טלפון') ||
+          fieldVal(f, 'Phone') ||
+          '',
+      })
+    }
+    offset = response.data.offset || null
+  } while (offset)
+
+  return rows.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+const PROJECT_MATERIALS_TABLE_ID =
+  import.meta.env.VITE_AIRTABLE_TABLE_ID || 'tbl1xxdrnXh4sk5MZ'
+/** Filter materials where this field equals the selected project display name (lookup/text). */
+const PROJECT_MATERIALS_FILTER_FIELD =
+  import.meta.env.VITE_PROJECT_MATERIALS_PROJECT_FILTER_FIELD ||
+  'fldRWOm9LWyuPH9S9'
+const PROJECT_MATERIALS_OUT_OF_STOCK_VALUE =
+  import.meta.env.VITE_PROJECT_MATERIALS_OUT_OF_STOCK_VALUE || 'לא במלאי'
+
+function escapeAirtableFormulaString(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
+function normalizeCellText(value) {
+  if (value == null || value === '') return ''
+  if (Array.isArray(value)) {
+    const coalesced = coalesceCharSplitStringArray(value)
+    if (Array.isArray(coalesced)) {
+      return coalesced.map((x) => String(x).trim()).filter(Boolean).join(', ')
+    }
+    return String(coalesced).trim()
+  }
+  return String(value).trim()
+}
+
+function readProjectMaterialField(fields, ...keys) {
+  for (const key of keys) {
+    if (!key) continue
+    const v = fields[key]
+    if (v != null && v !== '') return normalizeCellText(v)
+  }
+  return ''
+}
+
+function projectNameMatchesField(cellValue, projectName) {
+  const cell = normalizeCellText(cellValue)
+  const want = projectName.trim()
+  if (!want) return false
+  if (cell === want) return true
+  const wantPrimary = want.split(' - ')[0]?.trim()
+  if (wantPrimary && (cell === wantPrimary || cell.startsWith(wantPrimary))) return true
+  return cell.includes(want) || want.includes(cell)
+}
+
+function isOutOfStockFields(fields, fieldMap) {
+  const inStock = readProjectMaterialField(
+    fields,
+    fieldMap.inStock,
+    'מלאי',
+    'במלאי'
+  )
+  return inStock === PROJECT_MATERIALS_OUT_OF_STOCK_VALUE
+}
+
+function andFormula(...parts) {
+  return `AND(${parts.join(', ')})`
+}
+
+function stockEqualsFormula(fieldMap) {
+  const stockField = fieldMap.inStock
+  const escaped = escapeAirtableFormulaString(PROJECT_MATERIALS_OUT_OF_STOCK_VALUE)
+  return `{${stockField}} = '${escaped}'`
+}
+
+function mapRecordToProjectMaterial(record, fieldMap) {
+  const fields = record.fields || {}
+  const materialName = readProjectMaterialField(
+    fields,
+    fieldMap.materialName,
+    'חומר גלם',
+    'שם חומר'
+  )
+  const size = readProjectMaterialField(fields, fieldMap.size, 'מידה')
+  const quantity = readProjectMaterialField(fields, fieldMap.quantity, 'כמות')
+  const notes = readProjectMaterialField(fields, fieldMap.notes, 'הערות')
+  const inStock = readProjectMaterialField(
+    fields,
+    fieldMap.inStock,
+    'מלאי',
+    'במלאי'
+  )
+  const qtyStr = quantity !== '' ? quantity : ''
+  const labelParts = [materialName]
+  if (size) labelParts.push(size)
+  if (qtyStr) labelParts.push(`×${qtyStr}`)
+  return {
+    id: record.id,
+    materialName,
+    size,
+    quantity: qtyStr,
+    notes,
+    inStock,
+    label: labelParts.filter(Boolean).join(' · ') || record.id,
+  }
+}
+
+/**
+ * Materials for a production project (חומרי גלם לתיק ייצור, tbl1xxdrnXh4sk5MZ).
+ * Filters where fldRWOm9LWyuPH9S9 (or VITE_PROJECT_MATERIALS_PROJECT_FILTER_FIELD)
+ * equals the selected project display name, and מלאי is לא במלאי only.
+ * @param {string} projectName - Label from production project select (e.g. "reference - client")
+ */
+export const fetchProjectMaterials = async (projectName) => {
+  const name = String(projectName || '').trim()
+  if (!name) return []
+
+  const tableId = PROJECT_MATERIALS_TABLE_ID
+  if (!tableId) {
+    throw new Error('אנא הגדר VITE_AIRTABLE_TABLE_ID לטבלת חומרי גלם לתיק ייצור')
+  }
+
+  const url = `${AIRTABLE_BASE_URL}/${tableId}`
+  const fieldMap = projectMaterialsAirtableFields()
+  const filterField = PROJECT_MATERIALS_FILTER_FIELD
+  const escaped = escapeAirtableFormulaString(name)
+
+  const stockPart = stockEqualsFormula(fieldMap)
+  const formulaAttempts = [
+    andFormula(`{${filterField}} = '${escaped}'`, stockPart),
+    andFormula(`TRIM({${filterField}}) = '${escaped}'`, stockPart),
+    andFormula(`{${fieldMap.project}} = '${escaped}'`, stockPart),
+  ]
+
+  for (const formula of formulaAttempts) {
+    try {
+      const rows = await fetchProjectMaterialsWithFormula(url, formula, fieldMap, {
+        returnFieldsByFieldId: filterField.startsWith('fld'),
+      })
+      if (rows.length > 0) return rows
+    } catch (error) {
+      if (error.response?.status !== 422) throw error
+    }
+  }
+
+  return fetchProjectMaterialsFilteredClient(url, name, filterField, fieldMap)
+}
+
+async function fetchProjectMaterialsWithFormula(
+  url,
+  formula,
+  fieldMap,
+  { returnFieldsByFieldId = false } = {}
+) {
+  const materials = []
+  let offset = null
+
+  do {
+    const params = {
+      maxRecords: 100,
+      filterByFormula: formula,
+    }
+    if (returnFieldsByFieldId) params.returnFieldsByFieldId = true
+    if (offset) params.offset = offset
+
+    const response = await axios.get(url, {
+      params,
+      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` },
+    })
+
+    for (const record of response.data.records || []) {
+      const fields = record.fields || {}
+      if (!isOutOfStockFields(fields, fieldMap)) continue
+      materials.push(mapRecordToProjectMaterial(record, fieldMap))
+    }
+    offset = response.data.offset || null
+  } while (offset)
+
+  return materials.sort((a, b) => a.label.localeCompare(b.label))
+}
+
+async function fetchProjectMaterialsFilteredClient(
+  url,
+  projectName,
+  filterField,
+  fieldMap
+) {
+  const filterFieldName =
+    import.meta.env.VITE_PROJECT_MATERIALS_PROJECT_FILTER_FIELD_NAME || ''
+  const filterKeys = [
+    filterField.startsWith('fld') ? null : filterField,
+    filterFieldName,
+    filterField.startsWith('fld') ? filterField : null,
+    fieldMap.project,
+    'תיק ייצור',
+    'שם פרוייקט',
+    'reference',
+  ].filter(Boolean)
+
+  const runPass = async (returnFieldsByFieldId) => {
+    const materials = []
+    let offset = null
+    do {
+      const params = { maxRecords: 100 }
+      if (returnFieldsByFieldId) params.returnFieldsByFieldId = true
+      if (offset) params.offset = offset
+
+      const response = await axios.get(url, {
+        params,
+        headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` },
+      })
+
+      for (const record of response.data.records || []) {
+        const fields = record.fields || {}
+        const matchesProject = filterKeys.some((key) =>
+          projectNameMatchesField(fields[key], projectName)
+        )
+        if (matchesProject && isOutOfStockFields(fields, fieldMap)) {
+          materials.push(mapRecordToProjectMaterial(record, fieldMap))
+        }
+      }
+      offset = response.data.offset || null
+    } while (offset)
+    return materials
+  }
+
+  let materials = await runPass(false)
+  if (materials.length === 0 && filterField.startsWith('fld')) {
+    materials = await runPass(true)
+  }
+
+  return materials.sort((a, b) => a.label.localeCompare(b.label))
+}
+
+/** Airtable field names for the materials-for-project table (override via .env). */
+function projectMaterialsAirtableFields() {
+  return {
+    project:
+      import.meta.env.VITE_PROJECT_MATERIALS_FIELD_PROJECT || 'תיק ייצור',
+    materialName:
+      import.meta.env.VITE_PROJECT_MATERIALS_FIELD_NAME || 'חומר גלם',
+    size: import.meta.env.VITE_PROJECT_MATERIALS_FIELD_SIZE || 'מידה',
+    quantity:
+      import.meta.env.VITE_PROJECT_MATERIALS_FIELD_QUANTITY || 'כמות',
+    inStock:
+      import.meta.env.VITE_PROJECT_MATERIALS_FIELD_IN_STOCK || 'מלאי',
+    notes: import.meta.env.VITE_PROJECT_MATERIALS_FIELD_NOTES || 'הערות',
+  }
+}
+
+/**
+ * Maps one form row to Airtable fields for the materials-for-project table.
+ * @param {Object} record - { productionProject, materialName, size, quantity, inStock, notes }
+ */
+export const mapProjectMaterialToAirtable = (record) => {
+  const f = projectMaterialsAirtableFields()
+  return {
+    [f.project]: record.productionProject ? [record.productionProject] : [],
+    [f.materialName]: (record.materialName || '').trim(),
+    [f.size]: (record.size || '').trim(),
+    [f.quantity]: record.quantity !== '' && record.quantity != null
+      ? Number(record.quantity)
+      : 0,
+    [f.inStock]: record.inStock || '',
+    [f.notes]: (record.notes || '').trim(),
+  }
+}
+
+/**
+ * Creates multiple records in Airtable (materials for project table).
  * @param {Array} records - Array of record objects to create
  * @returns {Promise<Array>} Array of created records
  */
@@ -246,13 +564,8 @@ export const createRecords = async (records) => {
   for (let i = 0; i < records.length; i += batchSize) {
     const batch = records.slice(i, i + batchSize)
     
-    const recordsToCreate = batch.map(record => ({
-      fields: {
-        // Linked Record fields require an array of record IDs
-        'תיק ייצור': record.productionProject ? [record.productionProject] : [],
-        'חומר גלם': record.material ? [record.material] : [],
-        'כמות': record.quantity ? Number(record.quantity) : 0,
-      }
+    const recordsToCreate = batch.map((record) => ({
+      fields: mapProjectMaterialToAirtable(record),
     }))
 
     try {
@@ -288,22 +601,31 @@ export const createRecords = async (records) => {
   return allCreatedRecords
 }
 
-/**
- * Maps form field names to Airtable field names
- * Update this function based on your Airtable table structure
- */
-export const mapFieldsToAirtable = (record) => {
-  return {
-    'תיק ייצור': record.productionProject ? [record.productionProject] : [],
-    'חומר גלם': record.material ? [record.material] : [],
-    'כמות': record.quantity ? Number(record.quantity) : 0,
-  }
+/** @deprecated Use mapProjectMaterialToAirtable */
+export const mapFieldsToAirtable = mapProjectMaterialToAirtable
+
+/** Multiline text for הזמנת ספק header field חומרי גלם (long text, not linked records). */
+function buildSupplierOrderMaterialsParagraph(lines) {
+  return (lines || [])
+    .map((line) => {
+      const name = (line.materialName || '').trim()
+      if (!name) return ''
+      const parts = [name]
+      if (line.dimensions?.trim()) parts.push(`מידות: ${line.dimensions.trim()}`)
+      if (line.quantity !== '' && line.quantity != null) {
+        parts.push(`כמות: ${line.quantity}`)
+      }
+      if (line.lineNotes?.trim()) parts.push(`הערות: ${line.lineNotes.trim()}`)
+      return parts.join(' · ')
+    })
+    .filter(Boolean)
+    .join('\n')
 }
 
 /**
  * Creates a supplier order and its order-line records.
  * @param {Object} order - { supplierId, date, notes, attachmentUrl }
- * @param {Array} lines - [{ materialId, materialName, freeDescription, dimensions, quantity, lineNotes, status }]
+ * @param {Array} lines - [{ materialName, dimensions, quantity, lineNotes, status }]
  * @returns {Promise<{ order: Object, lineCount: number }>}
  */
 export const createSupplierOrder = async (order, lines) => {
@@ -328,7 +650,7 @@ export const createSupplierOrder = async (order, lines) => {
 
   // Build summary of materials from lines for the order header
   const materialSummaries = (lines || [])
-    .map((line) => line.materialName || line.freeDescription)
+    .map((line) => (line.materialName || '').trim())
     .filter(Boolean)
   const materialsSummary = materialSummaries.join(', ')
 
@@ -347,23 +669,27 @@ export const createSupplierOrder = async (order, lines) => {
     throw new Error('ספק הוא שדה חובה. אנא בחר ספק מהרשימה (מזהה רשומה לא תקין).')
   }
 
-  // Order header "חומרי גלם" is a linked-record field: send array of material record IDs from lines (not names).
-  const orderMaterialIds = [...new Set((lines || []).map((l) => l.materialId).filter((id) => id && String(id).trim().startsWith('rec')))]
+  const lineMaterialField =
+    import.meta.env.VITE_SUPPLIER_LINE_MATERIAL_FIELD || 'חומר גלם'
+  const orderMaterialsField =
+    import.meta.env.VITE_SUPPLIER_ORDER_MATERIALS_FIELD || 'חומרי גלם'
+  const materialsParagraph =
+    buildSupplierOrderMaterialsParagraph(lines) ||
+    (order.materialsSummary || '').trim()
 
   try {
-    // Create the supplier order record
     const orderFields = {
       'ספק': supplierIds,
       'תאריך': orderDate,
       'הערות': order.notes || '',
-      'חומרי גלם': orderMaterialIds,
+    }
+    if (materialsParagraph) {
+      orderFields[orderMaterialsField] = materialsParagraph
     }
     console.log('[createSupplierOrder] order payload:', JSON.stringify(orderFields, null, 2))
     if (lines?.length) {
-      console.log('[createSupplierOrder] first line (חומר גלם will be sent as array after order create):', {
-        materialId: lines[0].materialId,
+      console.log('[createSupplierOrder] first line:', {
         materialName: lines[0].materialName,
-        freeDescription: lines[0].freeDescription,
         dimensions: lines[0].dimensions,
         quantity: lines[0].quantity,
         lineNotes: lines[0].lineNotes,
@@ -406,8 +732,7 @@ export const createSupplierOrder = async (order, lines) => {
       const recordsToCreate = batch.map((line) => ({
         fields: {
           'הזמנת ספק': toRecordIds(orderId),
-          'חומר גלם': toRecordIds(line.materialId),
-          'תיאור מוצר חופשי': line.freeDescription || '',
+          [lineMaterialField]: (line.materialName || '').trim(),
           'מידות': line.dimensions || '',
           'כמות': line.quantity ? Number(line.quantity) : 0,
           'הערות לשורה': line.lineNotes || '',

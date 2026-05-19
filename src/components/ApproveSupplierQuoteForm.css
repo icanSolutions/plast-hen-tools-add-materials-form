@@ -1,0 +1,90 @@
+.approve-supplier-quote-form .form-alert {
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-weight: 500;
+}
+
+.approve-supplier-quote-form .form-alert-error {
+  background: #f8d7da;
+  color: #842029;
+  border: 1px solid #f5c2c7;
+}
+
+.approve-quote-intro {
+  color: #495057;
+  margin: 0 0 24px;
+  line-height: 1.55;
+  font-size: 0.98rem;
+}
+
+.approve-quote-hint {
+  color: #6c757d;
+  margin: 0 0 16px;
+}
+
+.approve-quote-detail {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  background: #f8f9fa;
+}
+
+.approve-quote-fields {
+  margin: 0 0 20px;
+}
+
+.approve-quote-field-row {
+  display: flex;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.approve-quote-field-row:last-child {
+  border-bottom: none;
+}
+
+.approve-quote-field-row dt {
+  min-width: 100px;
+  font-weight: 600;
+  color: #495057;
+  margin: 0;
+}
+
+.approve-quote-field-row dd {
+  margin: 0;
+  flex: 1;
+  color: #212529;
+}
+
+.approve-quote-materials-list {
+  margin: 0;
+  padding: 0 0 0 18px;
+}
+
+.approve-quote-materials-list li {
+  margin-bottom: 4px;
+}
+
+.approve-quote-price-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.approve-quote-price-row label {
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.approve-quote-price-input {
+  max-width: 200px;
+  font-size: 1.1rem;
+}
+
+.approve-supplier-quote-form .order-doc-actions {
+  justify-content: center;
+}
