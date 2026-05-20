@@ -256,3 +256,62 @@ export async function fillOrderDoc(documentId, data) {
     })
   }
 }
+
+const QUOTE_DOC_PLACEHOLDERS = [
+  'doc_num',
+  'client',
+  'contact_name',
+  'mail',
+  'contact_phone',
+  'date',
+  'description',
+  'products',
+  'transporting',
+  'additionals',
+  'total_without_tax',
+  'tax_price',
+  'total_with_tax',
+  'notes',
+  'payment_conditions',
+]
+
+/**
+ * Replace {{placeholder}} tokens in a quote template (no table rows).
+ * @param {string} documentId
+ * @param {Record<string, string>} data
+ */
+export async function fillQuoteDoc(documentId, data) {
+  const docs = await getDocs()
+  const requests = []
+
+  for (const key of QUOTE_DOC_PLACEHOLDERS) {
+    const placeholder = `{{${key}}}`
+    requests.push({
+      replaceAllText: {
+        containsText: { text: placeholder, matchCase: true },
+        replaceText: String(data[key] ?? ''),
+      },
+    })
+  }
+
+  // Legacy / alternate spellings
+  if (data.doc_num != null) {
+    requests.push({
+      replaceAllText: {
+        containsText: { text: '{{quote_reference}}', matchCase: true },
+        replaceText: String(data.doc_num),
+      },
+    })
+    requests.push({
+      replaceAllText: {
+        containsText: { text: '{{quote_ref}}', matchCase: true },
+        replaceText: String(data.doc_num),
+      },
+    })
+  }
+
+  await docs.documents.batchUpdate({
+    documentId,
+    requestBody: { requests },
+  })
+}

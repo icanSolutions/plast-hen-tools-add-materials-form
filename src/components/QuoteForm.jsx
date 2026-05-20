@@ -34,27 +34,6 @@ function notesWithClientSupplyLine(baseNotes, deliveryByClient) {
   return trimmed ? `${trimmed}\n${CLIENT_SUPPLY_NOTE}` : CLIENT_SUPPLY_NOTE
 }
 
-/** Single Airtable text field when הובלה ע״י החברה — הובלה, תוספות, מחיר לפני מע״מ. */
-function buildTransportingAdditionalsPayload(
-  deliveryBy,
-  transportLine,
-  extrasLine,
-  transportPriceBeforeTax
-) {
-  if (deliveryBy !== 'company') return ''
-  const t = String(transportLine ?? '').trim()
-  const e = String(extrasLine ?? '').trim()
-  const parts = []
-  if (t) parts.push(`הובלה: ${t}`)
-  if (e) parts.push(`תוספות: ${e}`)
-  if (transportPriceBeforeTax > 0) {
-    parts.push(
-      `מחיר הובלה (לפני מע״מ): ${transportPriceBeforeTax.toLocaleString('he-IL')}`
-    )
-  }
-  return parts.join('\n')
-}
-
 function parseMoneyInput(value) {
   const n = parseFloat(String(value ?? '').replace(',', '.'))
   if (!Number.isFinite(n) || n < 0) return 0
@@ -520,12 +499,10 @@ const QuoteForm = () => {
 
     const transportAmtSubmit =
       deliveryToClientBy === 'company' ? parseMoneyInput(companyTransportPrice) : 0
-    const transporting_additionals = buildTransportingAdditionalsPayload(
-      deliveryToClientBy,
-      companyTransportLine,
-      companyTransportExtras,
-      transportAmtSubmit
-    )
+    const transporting =
+      deliveryToClientBy === 'company' ? String(companyTransportLine ?? '').trim() : ''
+    const additionals =
+      deliveryToClientBy === 'company' ? String(companyTransportExtras ?? '').trim() : ''
     const notesOut = notesWithClientSupplyLine(notes, deliveryToClientBy === 'client')
 
     const iframeDoc = emailPreviewIframeRef.current?.contentDocument
@@ -552,7 +529,9 @@ const QuoteForm = () => {
             contact_name: selectedContact?.name || '',
           }),
       created_by_name: selectedEmployee?.name || '',
-      transporting_additionals,
+      transporting,
+      additionals,
+      transport_price_before_tax: transportAmtSubmit,
       notes: notesOut,
       internal_notes: internalNotes,
       products: productLines,
@@ -582,21 +561,25 @@ const QuoteForm = () => {
     try {
       setSubmitting(true)
       const res = await submitQuote(payload)
-      const n8nWarning =
-        res.n8n_called === false
-          ? null
-          : res.n8n_ok === false
-            ? 'שליחה ל-n8n נכשלה'
-            : null
+      const docWarning =
+        res.doc_ok === false
+          ? `יצירת מסמך PDF נכשלה${res.doc_error ? `: ${res.doc_error}` : ''}`
+          : null
+      const emailWarning =
+        sendToClient && !res.emailed
+          ? res.email_error
+            ? `שליחה ללקוח לא בוצעה: ${res.email_error}`
+            : 'שליחה ללקוח לא בוצעה'
+          : null
       setSubmitResult({
         kind: 'success',
         quote_reference: res.quote_reference || '',
         quote_record_id: res.quote_record_id || '',
         airtable_record_url: res.airtable_record_url || '',
-        n8n_called: res.n8n_called,
-        n8n_ok: res.n8n_ok,
-        n8n_error: res.n8n_error,
-        n8nWarning,
+        pdfUrl: res.pdfUrl || '',
+        emailed: res.emailed,
+        docWarning,
+        emailWarning,
       })
     } catch (err) {
       setSubmitResult({ kind: 'error', message: err.message })
@@ -655,12 +638,22 @@ const QuoteForm = () => {
                     במסך הרשומה ב-Airtable — לחצו על הכפתור למטה לפתיחה.
                   </p>
                 ) : null}
-                {submitResult.n8nWarning && (
+                {submitResult.pdfUrl ? (
+                  <p className="quote-result-hint">
+                    <a href={submitResult.pdfUrl} target="_blank" rel="noreferrer">
+                      מסמך הצעת מחיר (PDF)
+                    </a>
+                    {submitResult.emailed ? ' · נשלח מייל ללקוח עם הקובץ' : ''}
+                  </p>
+                ) : null}
+                {submitResult.docWarning && (
                   <p className="quote-result-warning" role="alert">
-                    אזהרה: {submitResult.n8nWarning}
-                    {submitResult.n8n_error
-                      ? ` (${String(submitResult.n8n_error)})`
-                      : ''}
+                    אזהרה: {submitResult.docWarning}
+                  </p>
+                )}
+                {submitResult.emailWarning && (
+                  <p className="quote-result-warning" role="alert">
+                    אזהרה: {submitResult.emailWarning}
                   </p>
                 )}
               </>

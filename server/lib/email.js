@@ -19,22 +19,25 @@ function getTransporter() {
 }
 
 /**
- * Send an email (e.g. to supplier with PDF link or attachment).
- * @param {string} to - Email address
- * @param {string} subject - Subject line
- * @param {string} text - Plain text body
- * @param {{ filename: string, content: Buffer }[]} [attachments] - Optional attachments
+ * Send an email (plain and/or HTML, optional attachments).
+ * @param {string} to
+ * @param {string} subject
+ * @param {string} [text] - Plain text body (fallback when html is set)
+ * @param {{ filename: string, content: Buffer }[]} [attachments]
+ * @param {{ html?: string }} [options]
  */
-export async function sendMail(to, subject, text, attachments = []) {
+export async function sendMail(to, subject, text, attachments = [], options = {}) {
   console.log('[email] sendMail to=', to, 'subject=', subject)
   const from = process.env.SMTP_FROM || process.env.SMTP_USER
   const transport = getTransporter()
+  const html = options.html != null ? String(options.html) : ''
   try {
     await transport.sendMail({
       from,
       to,
       subject,
-      text,
+      text: text || (html ? ' ' : ''),
+      html: html || undefined,
       attachments: attachments.length ? attachments : undefined,
     })
     console.log('[email] sendMail ok')

@@ -1,15 +1,17 @@
 import express from 'express'
-import axios from 'axios'
 import {
   createQuoteRecord,
   mapPayloadToQuoteFields,
   computeNextQuoteReference,
   getQuoteReferenceDiagnostics,
   resolveQuoteReferenceAfterCreate,
+  patchQuoteDocumentUrl,
   toRecordIds,
   formatProductsParagraphForDoc,
 } from '../lib/quoteAirtable.js'
 import { createQuoteContactAndLink } from '../lib/quoteContacts.js'
+import { createQuotePdfFromTemplate } from '../lib/quoteDoc.js'
+import { sendMail } from '../lib/email.js'
 
 const router = express.Router()
 
@@ -26,33 +28,6 @@ router.get('/next-reference', async (req, res, next) => {
     next(err)
   }
 })
-
-/**
- * First Airtable record id from a linked-record field (array of rec… ids).
- * Never use raw `[0]` on an unknown value: if a string was passed by mistake,
- * `str[0]` is only the first character (e.g. Hebrew name).
- */
-function firstLinkedRecordId(ids) {
-  if (!Array.isArray(ids) || ids.length === 0) return ''
-  const id = ids[0]
-  return typeof id === 'string' ? id : ''
-}
-
-function displayNameOrRecordId(name, linkedIds) {
-  const trimmed = name != null ? String(name).trim() : ''
-  if (trimmed) return trimmed
-  return firstLinkedRecordId(linkedIds)
-}
-
-/** Google Docs replaceText expects strings — n8n forwards these as replace_text. */
-function priceFieldString(value) {
-  const n = value != null && value !== '' ? Number(value) : NaN
-  if (!Number.isFinite(n)) return '0'
-  return n.toLocaleString('he-IL', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  })
-}
 
 function normalizePayload(body) {
   const products = Array.isArray(body.products)
@@ -113,6 +88,25 @@ function normalizePayload(body) {
         }
       : null
 
+  let transporting = body.transporting != null ? String(body.transporting) : ''
+  let additionals = body.additionals != null ? String(body.additionals) : ''
+  const transport_price_before_tax =
+    body.transport_price_before_tax != null
+      ? Number(body.transport_price_before_tax)
+      : 0
+
+  if (delivery_to_client_by === 'company') {
+    if (!transporting.trim() && body.company_transport_line != null) {
+      transporting = String(body.company_transport_line).trim()
+    }
+    if (!additionals.trim() && body.company_transport_extras != null) {
+      additionals = String(body.company_transport_extras).trim()
+    }
+  } else {
+    transporting = ''
+    additionals = ''
+  }
+
   return {
     description: body.description ?? '',
     customer: customerIds,
@@ -122,6 +116,12 @@ function normalizePayload(body) {
     customer_name: body.customer_name != null ? String(body.customer_name) : '',
     contact_name: body.contact_name != null ? String(body.contact_name) : '',
     created_by_name: body.created_by_name != null ? String(body.created_by_name) : '',
+    transporting,
+    additionals,
+    transport_price_before_tax:
+      delivery_to_client_by === 'company' && Number.isFinite(transport_price_before_tax)
+        ? transport_price_before_tax
+        : 0,
     transporting_additionals: body.transporting_additionals ?? '',
     notes: body.notes ?? '',
     internal_notes: body.internal_notes ?? '',
@@ -194,49 +194,45 @@ router.post('/submit', async (req, res, next) => {
     /** Prefer formula/reference on the new row; else prediction (sorted by created_at, then scan). Not written to Airtable. */
     const quote_reference = await resolveQuoteReferenceAfterCreate(created, recordId)
 
-    const n8nUrl = process.env.N8N_QUOTE_WEBHOOK_URL
-    const n8nSecret = process.env.N8N_QUOTE_WEBHOOK_SECRET
+    let pdfUrl = ''
+    let doc_error = null
+    let emailed = false
+    let email_error = null
 
-    // n8n / Google Docs: price fields must be strings for replaceText (not numbers).
-    const { new_contact: _omitNew, ...normalizedForOutbound } = normalized
-    const outbound = {
-      quote_record_id: recordId,
-      quote_reference,
-      quote_ref: quote_reference,
-      ...normalizedForOutbound,
-      products_json: JSON.stringify(normalized.products),
-      customer: displayNameOrRecordId(normalized.customer_name, normalized.customer),
-      customer_record_id: firstLinkedRecordId(normalized.customer),
-      contact: displayNameOrRecordId(normalized.contact_name, normalized.contact),
-      contact_record_id: firstLinkedRecordId(normalized.contact),
-      created_by: displayNameOrRecordId(normalized.created_by_name, normalized.created_by),
-      created_by_record_id: firstLinkedRecordId(normalized.created_by),
-      price: priceFieldString(normalized.price),
-      tax_price: priceFieldString(normalized.tax_price),
-      total_with_tax: priceFieldString(normalized.total_with_tax),
-    }
+    try {
+      const docPayload = { ...normalized, quote_record_id: recordId }
+      const { pdfUrl: url, pdfBuffer, filename } = await createQuotePdfFromTemplate(
+        docPayload,
+        quote_reference
+      )
+      pdfUrl = url
+      await patchQuoteDocumentUrl(recordId, pdfUrl)
 
-    let n8n_ok = null
-    let n8n_error = null
-    if (n8nUrl) {
-      const n8nHeaders = { 'Content-Type': 'application/json' }
-      if (n8nSecret) n8nHeaders['X-Webhook-Secret'] = n8nSecret
-      try {
-        const r = await axios.post(n8nUrl, outbound, {
-          headers: n8nHeaders,
-          timeout: 60000,
-          validateStatus: (s) => s < 500,
-        })
-        n8n_ok = r.status >= 200 && r.status < 300
-        if (!n8n_ok) {
-          console.error('[quote] n8n response', r.status, r.data)
-          n8n_error = `HTTP ${r.status}`
+      if (normalized.send_to_client) {
+        const clientEmail = String(normalized.email || '').trim()
+        if (clientEmail) {
+          const subject = `הצעת מחיר - ${quote_reference || recordId} פלסט-חן`
+          const html = String(normalized.client_email_body_html || '').trim()
+          try {
+            await sendMail(
+              clientEmail,
+              subject,
+              '',
+              [{ filename: filename || 'quote.pdf', content: pdfBuffer }],
+              { html: html || undefined }
+            )
+            emailed = true
+          } catch (mailErr) {
+            console.error('[quote] client email error', mailErr.message)
+            email_error = mailErr.message
+          }
+        } else {
+          email_error = 'no client email on form'
         }
-      } catch (err) {
-        console.error('[quote] n8n error', err.message)
-        n8n_ok = false
-        n8n_error = err.response?.data?.message || err.message
       }
+    } catch (docErr) {
+      console.error('[quote] document workflow error', docErr.message)
+      doc_error = docErr.message
     }
 
     const baseId = process.env.AIRTABLE_BASE_ID
@@ -261,9 +257,11 @@ router.post('/submit', async (req, res, next) => {
       quote_record_id: recordId,
       quote_reference,
       airtable_record_url,
-      n8n_called: Boolean(n8nUrl),
-      n8n_ok,
-      n8n_error,
+      pdfUrl: pdfUrl || undefined,
+      doc_ok: !doc_error,
+      doc_error: doc_error || undefined,
+      emailed,
+      email_error: email_error || undefined,
     })
   } catch (err) {
     next(err)

@@ -23,8 +23,12 @@ function quoteFieldMap() {
     customer_name_text: process.env.QUOTE_FIELD_CUSTOMER_NAME_TEXT || '',
     contact_name_text: process.env.QUOTE_FIELD_CONTACT_NAME_TEXT || '',
     created_by_name_text: process.env.QUOTE_FIELD_CREATED_BY_NAME_TEXT || '',
-    transporting_additionals:
-      process.env.QUOTE_FIELD_TRANSPORTING || 'הובלה ותוספות',
+    transporting: process.env.QUOTE_FIELD_TRANSPORTING || 'הובלה',
+    additionals: process.env.QUOTE_FIELD_ADDITIONALS || 'תוספות',
+    quote_document:
+      process.env.QUOTE_FIELD_QUOTE_DOCUMENT ||
+      process.env.QUOTE_FIELD_ADDITIONAL_DOCUMENTS ||
+      'מסמכים נוספים',
     notes: process.env.QUOTE_FIELD_NOTES || 'הערות',
     internal_notes:
       process.env.QUOTE_FIELD_INTERNAL_NOTES || 'הערות פנימיות',
@@ -276,8 +280,20 @@ export function mapPayloadToQuoteFields(payload) {
     fields[f.created_by_name_text] = String(payload.created_by_name)
   }
 
-  if (payload.transporting_additionals != null) {
-    fields[f.transporting_additionals] = String(payload.transporting_additionals)
+  if (payload.transporting != null && String(payload.transporting).trim() !== '') {
+    fields[f.transporting] = String(payload.transporting)
+  }
+  if (payload.additionals != null && String(payload.additionals).trim() !== '') {
+    fields[f.additionals] = String(payload.additionals)
+  }
+  /** @deprecated combined field — only written if separate fields are empty */
+  if (
+    payload.transporting_additionals != null &&
+    String(payload.transporting_additionals).trim() !== '' &&
+    !fields[f.transporting] &&
+    !fields[f.additionals]
+  ) {
+    fields[f.transporting] = String(payload.transporting_additionals)
   }
   if (payload.notes != null) fields[f.notes] = String(payload.notes)
   if (payload.internal_notes != null) {
@@ -388,6 +404,30 @@ export async function createQuoteRecord(fields) {
   const rec = res.data.records?.[0]
   if (!rec?.id) throw new Error('Airtable did not return quote record id')
   return rec
+}
+
+/**
+ * Patch quote record with generated PDF URL (מסמכים נוספים / quote document field).
+ */
+export async function patchQuoteDocumentUrl(recordId, pdfUrl) {
+  const tableId = process.env.AIRTABLE_QUOTES_TABLE_ID
+  const fieldKey = quoteFieldMap().quote_document
+  if (!tableId || !recordId || !fieldKey) {
+    throw new Error('Cannot patch quote document URL: missing table or field config')
+  }
+  const url = tableUrl(tableId)
+  await axios.patch(
+    url,
+    {
+      records: [
+        {
+          id: recordId,
+          fields: { [fieldKey]: pdfUrl },
+        },
+      ],
+    },
+    { headers: headers() }
+  )
 }
 
 export async function getQuoteRecordById(recordId) {

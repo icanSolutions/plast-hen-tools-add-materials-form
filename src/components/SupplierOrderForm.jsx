@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { fetchSuppliers, createSupplierOrder } from '../services/airtable'
 import { getApiBaseUrl, apiUrl } from '../utils/apiBase.js'
 import SearchableSelect from './SearchableSelect'
 import './SupplierOrderForm.css'
+import './QuoteForm.css'
 
 const createEmptyLine = () => ({
   materialName: '',
@@ -22,7 +23,15 @@ const SupplierOrderForm = () => {
   const [suppliers, setSuppliers] = useState([])
   const [isLoadingOptions, setIsLoadingOptions] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [submitStatus, setSubmitStatus] = useState(null)
+  const [formAlert, setFormAlert] = useState(null)
+  const [submitResult, setSubmitResult] = useState(null)
+  const resultTitleRef = useRef(null)
+
+  useLayoutEffect(() => {
+    if (!submitResult) return
+    window.scrollTo(0, 0)
+    resultTitleRef.current?.focus({ preventScroll: true })
+  }, [submitResult])
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -31,7 +40,7 @@ const SupplierOrderForm = () => {
         const suppliersData = await fetchSuppliers()
         setSuppliers(suppliersData)
       } catch (error) {
-        setSubmitStatus({
+        setFormAlert({
           type: 'error',
           message: `שגיאה בטעינת אפשרויות: ${error.message}`,
         })
@@ -69,14 +78,26 @@ const SupplierOrderForm = () => {
     return names.join(', ')
   }
 
+  const resetForNewOrder = () => {
+    setOrder({
+      supplierId: '',
+      date: new Date().toISOString().slice(0, 10),
+      notes: '',
+    })
+    setLines([createEmptyLine()])
+    setSubmitResult(null)
+    setFormAlert(null)
+  }
+
   const handleSubmit = async (e, action) => {
     e.preventDefault()
     setIsSubmitting(true)
-    setSubmitStatus(null)
+    setFormAlert(null)
+    setSubmitResult(null)
 
     try {
       if (!order.supplierId) {
-        setSubmitStatus({ type: 'error', message: 'יש לבחור ספק' })
+        setFormAlert({ type: 'error', message: 'יש לבחור ספק' })
         setIsSubmitting(false)
         return
       }
@@ -90,7 +111,7 @@ const SupplierOrderForm = () => {
       )
 
       if (validLines.length === 0) {
-        setSubmitStatus({
+        setFormAlert({
           type: 'error',
           message: 'יש למלא לפחות שורת הזמנה אחת',
         })
@@ -103,7 +124,7 @@ const SupplierOrderForm = () => {
       )
 
       if (invalidLines.length > 0) {
-        setSubmitStatus({
+        setFormAlert({
           type: 'error',
           message: 'בכל שורת הזמנה חובה למלא שם חומר וכמות',
         })
@@ -119,6 +140,8 @@ const SupplierOrderForm = () => {
         lineNotes: line.lineNotes,
         status: line.status,
       }))
+      const supplierName =
+        suppliers.find((s) => s.id === order.supplierId)?.name?.trim() || ''
       console.log(
         '[SupplierOrderForm] submit: supplierId=',
         order.supplierId,
@@ -131,100 +154,113 @@ const SupplierOrderForm = () => {
         payloadLines
       )
 
+      const orderId = result.order?.id || ''
+      const lineCount = result.lineCount ?? 0
       const apiBase = getApiBaseUrl()
 
+      const baseSuccess = {
+        kind: 'success',
+        action,
+        orderId,
+        lineCount,
+        supplierName,
+        pdfUrl: '',
+        emailed: false,
+        warning: '',
+      }
+
       if (apiBase !== null && action === 'save-pdf') {
-        setSubmitStatus({ type: 'success', message: 'יוצר מסמך ושומר ב-Airtable...' })
         try {
           const saveUrl = apiUrl('/api/supplier-order/pdf')
           const res = await fetch(saveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              orderId: result.order?.id,
+              orderId,
               order: { ...order, materialsSummary },
               lines: payloadLines,
             }),
           })
           if (res.ok) {
             const data = await res.json()
-            setSubmitStatus({
-              type: 'success',
-              message: `הזמנה נוצרה וטופס הזמנה נשמר ב-Airtable (${result.lineCount} שורות).`,
-            })
             if (data.pdfUrl) {
               console.log('[SupplierOrderForm] טופס הזמנה URL:', data.pdfUrl)
             }
+            setSubmitResult({
+              ...baseSuccess,
+              pdfUrl: data.pdfUrl || '',
+              lead: `הזמנה נוצרה וטופס הזמנה נשמר ב-Airtable (${lineCount} שורות).`,
+            })
           } else {
             const errBody = await res.text()
             console.error('[SupplierOrderForm] backend save non-ok:', res.status, errBody)
-            setSubmitStatus({
-              type: 'success',
-              message: `הזמנה נוצרה (${result.lineCount} שורות). שמירת טופס הזמנה ב-Airtable לא בוצעה.`,
+            setSubmitResult({
+              ...baseSuccess,
+              lead: `הזמנה נוצרה ב-Airtable (${lineCount} שורות).`,
+              warning: 'שמירת טופס הזמנה (PDF) ב-Airtable לא בוצעה.',
             })
           }
         } catch (apiErr) {
           console.error('[SupplierOrderForm] backend save error:', apiErr)
-          setSubmitStatus({
-            type: 'success',
-            message: `הזמנה נוצרה (${result.lineCount} שורות). שגיאה בשמירת טופס הזמנה: ${apiErr.message}`,
+          setSubmitResult({
+            ...baseSuccess,
+            lead: `הזמנה נוצרה ב-Airtable (${lineCount} שורות).`,
+            warning: `שגיאה בשמירת טופס הזמנה: ${apiErr.message}`,
           })
         }
       } else if (apiBase !== null && action === 'send') {
-        setSubmitStatus({ type: 'success', message: 'שולח לספק ומעלה ל-Drive...' })
         try {
           const sendUrl = apiUrl('/api/supplier-order/send')
           const res = await fetch(sendUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              orderId: result.order?.id,
+              orderId,
               order: { ...order, materialsSummary },
               lines: payloadLines,
             }),
           })
           if (res.ok) {
-            setSubmitStatus({
-              type: 'success',
-              message: `הזמנה נוצרה ונשלחה לספק (${result.lineCount} שורות).`,
+            const data = await res.json().catch(() => ({}))
+            setSubmitResult({
+              ...baseSuccess,
+              pdfUrl: data.pdfUrl || '',
+              emailed: Boolean(data.emailed),
+              lead: `הזמנה נוצרה ונשלחה לספק (${lineCount} שורות).`,
             })
           } else {
             const errBody = await res.text()
             console.error('[SupplierOrderForm] backend send non-ok:', res.status, errBody)
-            setSubmitStatus({
-              type: 'success',
-              message: `הזמנה נוצרה (${result.lineCount} שורות). שליחה לספק לא בוצעה.`,
+            setSubmitResult({
+              ...baseSuccess,
+              warning: 'שליחה לספק לא בוצעה.',
+              lead: `הזמנה נוצרה ב-Airtable (${lineCount} שורות).`,
             })
           }
         } catch (apiErr) {
           console.error('[SupplierOrderForm] backend send error:', apiErr)
-          setSubmitStatus({
-            type: 'success',
-            message: `הזמנה נוצרה (${result.lineCount} שורות). שגיאה בשליחה: ${apiErr.message}`,
+          setSubmitResult({
+            ...baseSuccess,
+            lead: `הזמנה נוצרה ב-Airtable (${lineCount} שורות).`,
+            warning: `שגיאה בשליחה: ${apiErr.message}`,
           })
         }
       } else {
-        setSubmitStatus({
-          type: 'success',
-          message:
+        setSubmitResult({
+          ...baseSuccess,
+          lead:
             apiBase !== null
-              ? `נוצרה בהצלחה הזמנת ספק (${result.lineCount} שורות).`
-              : `הזמנה נוצרה (${result.lineCount} שורות). להפעלת מסמך/Drive: הגדר VITE_PDF_API_BASE_URL ב-.env (למשל http://localhost:3001), הפעל את השרת (cd server && npm run dev) וטען מחדש את הדף.`,
+              ? `נוצרה בהצלחה הזמנת ספק (${lineCount} שורות).`
+              : `הזמנה נוצרה (${lineCount} שורות).`,
+          warning:
+            apiBase === null
+              ? 'להפעלת מסמך/Drive: הגדר VITE_PDF_API_BASE_URL ב-.env, הפעל את השרת (cd server && npm run dev) וטען מחדש את הדף.'
+              : '',
         })
       }
-
-      setTimeout(() => {
-        setOrder({
-          supplierId: '',
-          date: new Date().toISOString().slice(0, 10),
-          notes: '',
-        })
-        setLines([createEmptyLine()])
-        setSubmitStatus(null)
-      }, 4000)
     } catch (error) {
-      setSubmitStatus({
-        type: 'error',
+      setSubmitResult({
+        kind: 'error',
         message:
           error.message ||
           'שגיאה ביצירת הזמנת ספק. אנא בדוק את הגדרות ה-Airtable שלך.',
@@ -232,6 +268,64 @@ const SupplierOrderForm = () => {
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  if (submitResult) {
+    const ok = submitResult.kind === 'success'
+    return (
+      <div className="quote-result-page supplier-order-result-page">
+        <div className={`quote-result-card ${ok ? 'success' : 'error'}`}>
+          <div className="quote-result-announce">
+            <h1
+              ref={resultTitleRef}
+              className="quote-result-title"
+              tabIndex={-1}
+            >
+              {ok ? 'ההזמנה נוצרה בהצלחה' : 'הפעולה נכשלה'}
+            </h1>
+            {ok ? (
+              <>
+                <p className="quote-result-lead">{submitResult.lead}</p>
+                {submitResult.supplierName ? (
+                  <p className="quote-result-meta">
+                    ספק: <strong>{submitResult.supplierName}</strong>
+                  </p>
+                ) : null}
+                {submitResult.orderId ? (
+                  <p className="quote-result-meta">
+                    מזהה הזמנה: <span dir="ltr">{submitResult.orderId}</span>
+                  </p>
+                ) : null}
+                {submitResult.pdfUrl ? (
+                  <p className="quote-result-hint">
+                    <a href={submitResult.pdfUrl} target="_blank" rel="noreferrer">
+                      טופס הזמנה (PDF)
+                    </a>
+                    {submitResult.emailed ? ' · נשלח מייל לספק' : ''}
+                  </p>
+                ) : null}
+                {submitResult.warning ? (
+                  <p className="quote-result-warning" role="alert">
+                    {submitResult.warning}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className="quote-result-error-msg">{submitResult.message}</p>
+            )}
+          </div>
+          <div className="quote-result-actions">
+            <button
+              type="button"
+              className="quote-submit-btn"
+              onClick={resetForNewOrder}
+            >
+              הזמנה חדשה
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -242,6 +336,12 @@ const SupplierOrderForm = () => {
 
       <div className="order-doc">
         <h1 className="order-doc-title">הזמנת ספק</h1>
+
+        {formAlert && (
+          <div className={`form-alert form-alert-${formAlert.type}`} role="alert">
+            {formAlert.message}
+          </div>
+        )}
 
         <div className="order-doc-meta">
           <div className="order-doc-meta-row">
@@ -392,12 +492,6 @@ const SupplierOrderForm = () => {
           </button>
         </div>
       </div>
-
-      {submitStatus && (
-        <div className={`status-message ${submitStatus.type}`}>
-          {submitStatus.message}
-        </div>
-      )}
     </form>
   )
 }
